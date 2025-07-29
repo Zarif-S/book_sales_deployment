@@ -244,20 +244,23 @@ def plot_sales_trends(df: pd.DataFrame, isbn_list: List[str],
     """
     logger.info(f"Creating sales trends plot for {len(isbn_list)} books")
     
+    # Ensure ISBN column is string for robust comparison
+    df = df.copy()
+    df['ISBN'] = df['ISBN'].astype(str)
+    
     fig = go.Figure()
     
     for isbn in isbn_list:
-        # Convert string ISBN to int for comparison with DataFrame
-        isbn_int = int(isbn)
-        if isbn_int in df['ISBN'].values:
-            isbn_data = df[df['ISBN'] == isbn_int]
+        isbn_str = str(isbn)
+        if isbn_str in df['ISBN'].values:
+            isbn_data = df[df['ISBN'] == isbn_str]
             
             # Add weekly data
             fig.add_trace(go.Scatter(
                 x=isbn_data.index,
                 y=isbn_data['Volume'],
                 mode='lines+markers',
-                name=f"{str(isbn)} - {isbn_to_title.get(str(isbn), 'Unknown')} (Weekly)",
+                name=f"{isbn_str} - {isbn_to_title.get(isbn_str, 'Unknown')} (Weekly)",
                 line=dict(width=2)
             ))
     
