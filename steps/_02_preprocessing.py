@@ -812,6 +812,12 @@ def preprocess_loaded_data(df_isbns: pd.DataFrame, df_uk_weekly: pd.DataFrame) -
     
     # Merge and fill author data
     df_uk_weekly_filled = merge_and_fill_author_data(df_uk_weekly, df_isbns)
+
+    # Ensure 'End Date' is datetime and set as index
+    if 'End Date' in df_uk_weekly_filled.columns:
+        df_uk_weekly_filled = df_uk_weekly_filled.copy()
+        df_uk_weekly_filled['End Date'] = pd.to_datetime(df_uk_weekly_filled['End Date'])
+        df_uk_weekly_filled = df_uk_weekly_filled.set_index('End Date')
     
     # Final missing value analysis
     logger.info("Analyzing remaining missing values after filling 'Author':")

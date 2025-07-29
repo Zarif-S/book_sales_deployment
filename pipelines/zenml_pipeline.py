@@ -13,6 +13,16 @@ from steps._01_load_data import (
     get_uk_weekly_data
 )
 from steps._02_preprocessing import preprocess_loaded_data
+from utils.plotting import (
+    plot_weekly_volume_by_isbn,
+    plot_yearly_volume_by_isbn,
+    plot_selected_books_weekly,
+    plot_selected_books_yearly,
+    plot_sales_trends,
+    create_summary_dashboard,
+    save_plot
+)
+from steps._02_preprocessing import get_isbn_to_title_mapping
 
 logger = get_logger(__name__)
 
@@ -105,6 +115,7 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
         raise
 
 @step(
+    # enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -287,10 +298,89 @@ def save_processed_data_step(
         logger.error(f"Failed to save processed data: {e}")
         raise
 
+# ------------------ PLOT STEPS ------------------ #
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_weekly_volume_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="weekly_volume_plot_path")]:
+    """Generate and save weekly volume plot."""
+    import os
+    plot_path = os.path.join(output_dir, "first_12_years_sales.html")
+    fig = plot_weekly_volume_by_isbn(df_merged)
+    save_plot(fig, plot_path)
+    return plot_path
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_yearly_volume_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="yearly_volume_plot_path")]:
+    """Generate and save yearly volume plot."""
+    import os
+    plot_path = os.path.join(output_dir, "last_12_years_sales.html")
+    fig = plot_yearly_volume_by_isbn(df_merged)
+    save_plot(fig, plot_path)
+    return plot_path
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_selected_books_weekly_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="selected_books_weekly_plot_path")]:
+    """Generate and save weekly plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "selected_books_weekly.html")
+    fig = plot_selected_books_weekly(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_selected_books_yearly_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="selected_books_yearly_plot_path")]:
+    """Generate and save yearly plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "selected_books_yearly.html")
+    fig = plot_selected_books_yearly(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_sales_trends_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="sales_trends_plot_path")]:
+    """Generate and save sales trends plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    isbn_list = list(isbn_to_title.keys())
+    plot_path = os.path.join(output_dir, "sales_trends_analysis.html")
+    fig = plot_sales_trends(df_merged, isbn_list, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_summary_dashboard_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="summary_dashboard_plot_path")]:
+    """Generate and save summary dashboard plot."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "summary_dashboard.html")
+    fig = create_summary_dashboard(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
+
 # ------------------ PIPELINE ------------------ #
 
 @pipeline
-def book_sales_pipeline(output_dir: str) -> Tuple[pd.DataFrame, Dict, str]:
+def book_sales_pipeline(output_dir: str) -> Dict:
     """Book sales data processing pipeline (updated for new preprocessing)."""
     logger.info("Running pipeline: book_sales_pipeline (updated)")
     # Load raw data
@@ -305,10 +395,25 @@ def book_sales_pipeline(output_dir: str) -> Tuple[pd.DataFrame, Dict, str]:
         df_merged=df_merged, 
         output_dir=output_dir
     )
+    # Plot outputs (store in outputs/ directory)
+    plot_dir = os.path.join(os.path.dirname(output_dir), 'outputs')
+    os.makedirs(plot_dir, exist_ok=True)
+    weekly_plot_path = plot_weekly_volume_step(df_merged=df_merged, output_dir=plot_dir)
+    yearly_plot_path = plot_yearly_volume_step(df_merged=df_merged, output_dir=plot_dir)
+    selected_books_weekly_path = plot_selected_books_weekly_step(df_merged=df_merged, output_dir=plot_dir)
+    selected_books_yearly_path = plot_selected_books_yearly_step(df_merged=df_merged, output_dir=plot_dir)
+    sales_trends_path = plot_sales_trends_step(df_merged=df_merged, output_dir=plot_dir)
+    summary_dashboard_path = plot_summary_dashboard_step(df_merged=df_merged, output_dir=plot_dir)
     return {
-    "df_merged": df_merged,
-    "quality_report": quality_report,
-    "processed_data_path": processed_data_path,
+        "df_merged": df_merged,
+        "quality_report": quality_report,
+        "processed_data_path": processed_data_path,
+        "weekly_plot_path": weekly_plot_path,
+        "yearly_plot_path": yearly_plot_path,
+        "selected_books_weekly_path": selected_books_weekly_path,
+        "selected_books_yearly_path": selected_books_yearly_path,
+        "sales_trends_path": sales_trends_path,
+        "summary_dashboard_path": summary_dashboard_path,
     }
 
 # ------------------ MAIN ------------------ #
