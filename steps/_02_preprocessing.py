@@ -427,6 +427,70 @@ def get_data_info(df: pd.DataFrame) -> Dict:
     return info
 
 
+def analyze_missing_values(df, dataset_name):
+    """Analyze and print missing values in a DataFrame."""
+    print(f"{dataset_name} Data Info:")
+    df.info()
+    print(f"\nMissing values in {dataset_name}:")
+    missing_values = df.isna().sum()
+    print(missing_values)
+    if missing_values.sum() > 0:
+        print(f"\nNulls present in: {', '.join(missing_values[missing_values > 0].index.tolist())}")
+    else:
+        print(f"\nNo missing values found in {dataset_name}")
+    return missing_values
+
+def merge_and_fill_author_data(df_uk_weekly, df_isbns):
+    """Merge UK weekly data with ISBN data and fill missing author values."""
+    df_merged = df_uk_weekly.merge(df_isbns[['ISBN', 'Author']], on='ISBN', how='left', suffixes=('', '_ISBN'))
+    print("\nSample of merged DataFrame with missing Author values:")
+    print(df_merged[df_merged['Author'].isna()].head())
+    df_merged['Author'] = df_merged['Author'].fillna(df_merged['Author_ISBN'])
+    print("\nSample after filling missing 'Author' values:")
+    filled_samples = df_merged[df_merged['Author_ISBN'].notna()]
+    if not filled_samples.empty:
+        print(filled_samples.head())
+    else:
+        print("No samples with filled Author values found")
+    df_uk_weekly_filled = df_merged.drop(columns=['Author_ISBN'])
+    print("\nSample after dropping extra columns:")
+    print(df_uk_weekly_filled.head())
+    return df_uk_weekly_filled
+
+def display_data_summary(df_uk_weekly):
+    """Display summary information about the data."""
+    unique_titles = df_uk_weekly['Title'].unique()
+    print(f"\nUnique titles in df_UK_weekly: {len(unique_titles)}")
+    print("First 10 unique titles:")
+    for i, title in enumerate(unique_titles[:10]):
+        print(f"{i+1}. {title}")
+    if len(unique_titles) > 10:
+        print(f"... and {len(unique_titles) - 10} more titles")
+
+def create_data_backups(df_isbns, df_uk_weekly):
+    """Create backups of raw data."""
+    df_isbns_raw = df_isbns.copy()
+    df_uk_weekly_raw = df_uk_weekly.copy()
+    return df_isbns_raw, df_uk_weekly_raw
+
+# Optionally, add a new function to perform the full preprocessing pipeline that was previously in get_csv_data/get_merged_data
+
+def preprocess_loaded_data(df_isbns, df_uk_weekly):
+    """Run the preprocessing pipeline on loaded data."""
+    analyze_missing_values(df_isbns, "ISBN")
+    analyze_missing_values(df_uk_weekly, "UK Weekly")
+    df_uk_weekly_filled = merge_and_fill_author_data(df_uk_weekly, df_isbns)
+    print("\nRemaining missing values after filling 'Author':")
+    print(df_uk_weekly_filled.isna().sum())
+    display_data_summary(df_uk_weekly)
+    df_isbns_raw, df_uk_weekly_raw = create_data_backups(df_isbns, df_uk_weekly)
+    return {
+        'df_isbns': df_isbns,
+        'df_uk_weekly': df_uk_weekly_filled,
+        'df_isbns_raw': df_isbns_raw,
+        'df_uk_weekly_raw': df_uk_weekly_raw
+    }
+
 if __name__ == "__main__":
     # This section would be used for testing the preprocessing functions
     # when the script is run directly

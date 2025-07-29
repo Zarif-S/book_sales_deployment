@@ -1,23 +1,76 @@
 import pandas as pd
 import gdown
 import os
+from typing import Dict, List, Tuple, Optional, Union
+from datetime import datetime, timedelta
+import logging
 
-def download_google_sheet(file_id, destination_file):
-    """Download Google Sheets and load into a DataFrame."""
+# Set up logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+def is_file_recent(file_path: str, max_age_hours: int = 240) -> bool:
+    """Check if a file exists and is recent enough to avoid re-downloading."""
+    if not os.path.exists(file_path):
+        return False
+    
+    file_age = datetime.now() - datetime.fromtimestamp(os.path.getmtime(file_path))
+    return file_age < timedelta(hours=max_age_hours)
+
+def download_google_sheet(file_id: str, destination_file: str, force_download: bool = False) -> str:
+    """Download Google Sheets with error handling and caching."""
+    if not force_download and is_file_recent(destination_file):
+        logger.info(f"Using cached file: {destination_file}")
+        return destination_file
+    
     download_url = f'https://docs.google.com/spreadsheets/d/{file_id}/export?format=xlsx'
-    gdown.download(download_url, destination_file, quiet=False)
-    return destination_file
+    
+    try:
+        logger.info(f"Downloading from Google Sheets: {file_id}")
+        gdown.download(download_url, destination_file, quiet=False)
+        logger.info(f"Successfully downloaded: {destination_file}")
+        return destination_file
+    except Exception as e:
+        logger.error(f"Failed to download Google Sheet {file_id}: {str(e)}")
+        # If download fails but cached file exists, use it
+        if os.path.exists(destination_file):
+            logger.warning(f"Download failed, using existing file: {destination_file}")
+            return destination_file
+        else:
+            raise Exception(f"Download failed and no cached file available: {str(e)}")
 
-def load_and_concat_sheets(file_name, sheet_names, source_labels):
-    """Load and concatenate multiple sheets into a single DataFrame."""
-    all_sheets = []
-    for sheet_name, source_label in zip(sheet_names, source_labels):
+def load_excel_sheet(file_name: str, sheet_name: str) -> pd.DataFrame:
+    """Load a single Excel sheet into a DataFrame."""
+    try:
         df = pd.read_excel(file_name, sheet_name=sheet_name)
-        df['Source'] = source_label
-        all_sheets.append(df)
-    return pd.concat(all_sheets, ignore_index=True)
+        logger.info(f"Loaded sheet '{sheet_name}' with {len(df)} rows")
+        return df
+    except Exception as e:
+        logger.error(f"Failed to load sheet '{sheet_name}' from {file_name}: {str(e)}")
+        raise
 
-def get_data_config():
+def concatenate_sheets(sheets_data: List[Tuple[pd.DataFrame, str]]) -> pd.DataFrame:
+    """Concatenate multiple sheets with source labels into a single DataFrame."""
+    all_sheets = []
+    for df, source_label in sheets_data:
+        df_copy = df.copy()
+        df_copy['Source'] = source_label
+        all_sheets.append(df_copy)
+    
+    concatenated_df = pd.concat(all_sheets, ignore_index=True)
+    logger.info(f"Concatenated {len(all_sheets)} sheets into DataFrame with {len(concatenated_df)} total rows")
+    return concatenated_df
+
+def load_and_concat_sheets(file_name: str, sheet_names: List[str], source_labels: List[str]) -> pd.DataFrame:
+    """Load multiple sheets and concatenate them into a single DataFrame."""
+    sheets_data = []
+    for sheet_name, source_label in zip(sheet_names, source_labels):
+        df = load_excel_sheet(file_name, sheet_name)
+        sheets_data.append((df, source_label))
+    
+    return concatenate_sheets(sheets_data)
+
+def get_data_config() -> Dict[str, Union[str, List[str]]]:
     """Return configuration for data sources."""
     return {
         'isbn_file_id': '1OlWWukTpNCXKT21n92yGF1rWHZPwy3a-',
@@ -27,207 +80,119 @@ def get_data_config():
         'source_labels': ["F - Adult Fiction", "S Adult Non-Fiction Specialist", "T Adult Non-Fiction Trade", "Y Children's, YA & Educational"]
     }
 
-def ensure_raw_data_dir():
-    """Ensure the raw data directory exists."""
+def ensure_raw_data_dir() -> str:
+    """Ensure the raw data directory exists and return its path."""
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     raw_data_dir = os.path.join(project_root, 'data', 'raw')
     os.makedirs(raw_data_dir, exist_ok=True)
     return raw_data_dir
 
-def load_isbn_data(config):
-    """Load ISBN data from Google Sheets."""
+def load_data_from_google_sheets(file_id: str, sheet_names: List[str], source_labels: List[str], 
+                                destination_filename: str, force_download: bool = False) -> pd.DataFrame:
+    """Generic function to load data from Google Sheets."""
     raw_data_dir = ensure_raw_data_dir()
-    isbn_destination_file = os.path.join(raw_data_dir, 'ISBN.xlsx')
-    download_google_sheet(config['isbn_file_id'], isbn_destination_file)
-    df_isbns = load_and_concat_sheets(isbn_destination_file, config['isbn_sheet_names'], config['source_labels'])
-    return df_isbns
+    destination_file = os.path.join(raw_data_dir, destination_filename)
+    
+    download_google_sheet(file_id, destination_file, force_download)
+    return load_and_concat_sheets(destination_file, sheet_names, source_labels)
 
-def load_uk_weekly_data(config):
-    """Load UK weekly data from Google Sheets."""
+def save_dataframe_as_csv(df: pd.DataFrame, filename: str, description: str) -> str:
+    """Save a DataFrame as CSV and return the file path."""
     raw_data_dir = ensure_raw_data_dir()
-    uk_destination_file = os.path.join(raw_data_dir, 'UK_weekly_data.xlsx')
-    download_google_sheet(config['uk_file_id'], uk_destination_file)
-    df_uk_weekly = load_and_concat_sheets(uk_destination_file, config['uk_sheet_names'], config['source_labels'])
-    return df_uk_weekly
+    csv_path = os.path.join(raw_data_dir, filename)
+    df.to_csv(csv_path, index=False)
+    logger.info(f"{description} saved as CSV: {csv_path}")
+    return csv_path
 
-def save_raw_data_as_csv(df_isbns, df_uk_weekly):
-    """Save raw data as CSV files in the raw data directory."""
-    raw_data_dir = ensure_raw_data_dir()
-    
-    # Save ISBN data as CSV
-    isbn_csv_path = os.path.join(raw_data_dir, 'ISBN_data.csv')
-    df_isbns.to_csv(isbn_csv_path, index=False)
-    print(f"ISBN data saved as CSV: {isbn_csv_path}")
-    
-    # Save UK weekly data as CSV
-    uk_csv_path = os.path.join(raw_data_dir, 'UK_weekly_data.csv')
-    df_uk_weekly.to_csv(uk_csv_path, index=False)
-    print(f"UK weekly data saved as CSV: {uk_csv_path}")
-    
-    return isbn_csv_path, uk_csv_path
+def save_raw_data_as_csv(datasets: Dict[str, Tuple[pd.DataFrame, str, str]]) -> Dict[str, str]:
+    """Save multiple DataFrames as CSV files."""
+    csv_paths = {}
+    for key, (df, filename, description) in datasets.items():
+        csv_paths[key] = save_dataframe_as_csv(df, filename, description)
+    return csv_paths
 
-def analyze_missing_values(df, dataset_name):
-    """Analyze and print missing values in a DataFrame."""
-    print(f"{dataset_name} Data Info:")
-    df.info()
-    
-    print(f"\nMissing values in {dataset_name}:")
-    missing_values = df.isna().sum()
-    print(missing_values)
-    
-    # Print summary of missing values
-    if missing_values.sum() > 0:
-        print(f"\nNulls present in: {', '.join(missing_values[missing_values > 0].index.tolist())}")
+def load_csv_data_file(csv_path: str, description: str) -> Optional[pd.DataFrame]:
+    """Load a single CSV file if it exists."""
+    if os.path.exists(csv_path):
+        df = pd.read_csv(csv_path)
+        logger.info(f"Loaded {description} from CSV: {csv_path}")
+        return df
     else:
-        print(f"\nNo missing values found in {dataset_name}")
-    
-    return missing_values
+        logger.warning(f"{description} CSV file not found: {csv_path}")
+        return None
 
-def merge_and_fill_author_data(df_uk_weekly, df_isbns):
-    """Merge UK weekly data with ISBN data and fill missing author values."""
-    # Step 1: Merge df_UK_weekly with df_ISBNs on 'ISBN' column
-    df_merged = df_uk_weekly.merge(df_isbns[['ISBN', 'Author']], on='ISBN', how='left', suffixes=('', '_ISBN'))
-    
-    print("\nSample of merged DataFrame with missing Author values:")
-    print(df_merged[df_merged['Author'].isna()].head())
-    
-    # Step 2: Fill missing 'Author' values in df_UK_weekly from df_ISBNs where available
-    df_merged['Author'] = df_merged['Author'].fillna(df_merged['Author_ISBN'])
-    
-    print("\nSample after filling missing 'Author' values:")
-    filled_samples = df_merged[df_merged['Author_ISBN'].notna()]
-    if not filled_samples.empty:
-        print(filled_samples.head())
-    else:
-        print("No samples with filled Author values found")
-    
-    # Step 3: Drop the extra 'Author_ISBN' column after merge
-    df_uk_weekly_filled = df_merged.drop(columns=['Author_ISBN'])
-    
-    print("\nSample after dropping extra columns:")
-    print(df_uk_weekly_filled.head())
-    
-    return df_uk_weekly_filled
-
-def display_data_summary(df_uk_weekly):
-    """Display summary information about the data."""
-    # Display unique titles
-    unique_titles = df_uk_weekly['Title'].unique()
-    print(f"\nUnique titles in df_UK_weekly: {len(unique_titles)}")
-    print("First 10 unique titles:")
-    for i, title in enumerate(unique_titles[:10]):
-        print(f"{i+1}. {title}")
-    
-    if len(unique_titles) > 10:
-        print(f"... and {len(unique_titles) - 10} more titles")
-
-def create_data_backups(df_isbns, df_uk_weekly):
-    """Create backups of raw data."""
-    df_isbns_raw = df_isbns.copy()
-    df_uk_weekly_raw = df_uk_weekly.copy()
-    return df_isbns_raw, df_uk_weekly_raw
-
-def load_csv_data():
+def load_csv_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """Load data from existing CSV files in the raw data directory."""
     raw_data_dir = ensure_raw_data_dir()
     
-    # Load ISBN data from CSV
+    # Define CSV file paths
     isbn_csv_path = os.path.join(raw_data_dir, 'ISBN_data.csv')
-    if os.path.exists(isbn_csv_path):
-        df_isbns = pd.read_csv(isbn_csv_path)
-        print(f"Loaded ISBN data from CSV: {isbn_csv_path}")
-    else:
-        print(f"ISBN CSV file not found: {isbn_csv_path}")
-        df_isbns = None
-    
-    # Load UK weekly data from CSV
     uk_csv_path = os.path.join(raw_data_dir, 'UK_weekly_data.csv')
-    if os.path.exists(uk_csv_path):
-        df_uk_weekly = pd.read_csv(uk_csv_path)
-        print(f"Loaded UK weekly data from CSV: {uk_csv_path}")
-    else:
-        print(f"UK weekly CSV file not found: {uk_csv_path}")
-        df_uk_weekly = None
+    
+    # Load both datasets
+    df_isbns = load_csv_data_file(isbn_csv_path, "ISBN data")
+    df_uk_weekly = load_csv_data_file(uk_csv_path, "UK weekly data")
     
     return df_isbns, df_uk_weekly
 
-def get_csv_data():
+def get_csv_data() -> Tuple[Optional[pd.DataFrame], Optional[pd.DataFrame]]:
     """Main function to load and return data from CSV files."""
-    df_isbns, df_uk_weekly = load_csv_data()
+    return load_csv_data()
+
+def load_isbn_data(config: Optional[Dict[str, Union[str, List[str]]]] = None, 
+                   force_download: bool = False) -> pd.DataFrame:
+    """Load ISBN data from Google Sheets."""
+    if config is None:
+        config = get_data_config()
     
-    if df_isbns is not None and df_uk_weekly is not None:
-        # Analyze missing values
-        analyze_missing_values(df_isbns, "ISBN")
-        analyze_missing_values(df_uk_weekly, "UK Weekly")
-        
-        # Merge and fill missing data
-        df_uk_weekly_filled = merge_and_fill_author_data(df_uk_weekly, df_isbns)
-        
-        # Check remaining missing values
-        print("\nRemaining missing values after filling 'Author':")
-        print(df_uk_weekly_filled.isna().sum())
-        
-        # Display summary
-        display_data_summary(df_uk_weekly)
-        
-        # Create backups
-        df_isbns_raw, df_uk_weekly_raw = create_data_backups(df_isbns, df_uk_weekly)
-        
-        return {
-            'df_isbns': df_isbns,
-            'df_uk_weekly': df_uk_weekly_filled,
-            'df_isbns_raw': df_isbns_raw,
-            'df_uk_weekly_raw': df_uk_weekly_raw
-        }
-    else:
-        print("Could not load one or both CSV files. Please ensure they exist in data/raw/")
-        return None
+    return load_data_from_google_sheets(
+        file_id=config['isbn_file_id'],
+        sheet_names=config['isbn_sheet_names'],
+        source_labels=config['source_labels'],
+        destination_filename='ISBN.xlsx',
+        force_download=force_download
+    )
 
-def get_isbn_data():
+def load_uk_weekly_data(config: Optional[Dict[str, Union[str, List[str]]]] = None, 
+                        force_download: bool = False) -> pd.DataFrame:
+    """Load UK weekly data from Google Sheets."""
+    if config is None:
+        config = get_data_config()
+    
+    return load_data_from_google_sheets(
+        file_id=config['uk_file_id'],
+        sheet_names=config['uk_sheet_names'],
+        source_labels=config['source_labels'],
+        destination_filename='UK_weekly_data.xlsx',
+        force_download=force_download
+    )
+
+def get_isbn_data(force_download: bool = False) -> pd.DataFrame:
     """Main function to load and return ISBN data."""
-    config = get_data_config()
-    df_isbns = load_isbn_data(config)
-    return df_isbns
+    return load_isbn_data(force_download=force_download)
 
-def get_uk_weekly_data():
+def get_uk_weekly_data(force_download: bool = False) -> pd.DataFrame:
     """Main function to load and return UK weekly data."""
-    config = get_data_config()
-    df_uk_weekly = load_uk_weekly_data(config)
-    return df_uk_weekly
+    return load_uk_weekly_data(force_download=force_download)
 
-def get_merged_data():
+def get_merged_data(force_download: bool = False) -> Dict[str, pd.DataFrame]:
     """Main function to load, merge, and return processed data."""
     config = get_data_config()
     
-    # Load raw data
-    df_isbns = load_isbn_data(config)
-    df_uk_weekly = load_uk_weekly_data(config)
+    # Load both datasets
+    df_isbns = load_isbn_data(config, force_download)
+    df_uk_weekly = load_uk_weekly_data(config, force_download)
     
-    # Save raw data as CSV files
-    save_raw_data_as_csv(df_isbns, df_uk_weekly)
-    
-    # Analyze missing values
-    analyze_missing_values(df_isbns, "ISBN")
-    analyze_missing_values(df_uk_weekly, "UK Weekly")
-    
-    # Merge and fill missing data
-    df_uk_weekly_filled = merge_and_fill_author_data(df_uk_weekly, df_isbns)
-    
-    # Check remaining missing values
-    print("\nRemaining missing values after filling 'Author':")
-    print(df_uk_weekly_filled.isna().sum())
-    
-    # Display summary
-    display_data_summary(df_uk_weekly)
-    
-    # Create backups
-    df_isbns_raw, df_uk_weekly_raw = create_data_backups(df_isbns, df_uk_weekly)
+    # Save as CSV files
+    datasets = {
+        'isbn': (df_isbns, 'ISBN_data.csv', 'ISBN data'),
+        'uk_weekly': (df_uk_weekly, 'UK_weekly_data.csv', 'UK weekly data')
+    }
+    save_raw_data_as_csv(datasets)
     
     return {
         'df_isbns': df_isbns,
-        'df_uk_weekly': df_uk_weekly_filled,
-        'df_isbns_raw': df_isbns_raw,
-        'df_uk_weekly_raw': df_uk_weekly_raw
+        'df_uk_weekly': df_uk_weekly
     }
 
 if __name__ == '__main__':
@@ -237,8 +202,6 @@ if __name__ == '__main__':
     # Access individual DataFrames
     df_isbns = data_dict['df_isbns']
     df_uk_weekly = data_dict['df_uk_weekly']
-    df_isbns_raw = data_dict['df_isbns_raw']
-    df_uk_weekly_raw = data_dict['df_uk_weekly_raw']
     
     print("\nData loading completed successfully!")
     print(f"ISBN data shape: {df_isbns.shape}")
