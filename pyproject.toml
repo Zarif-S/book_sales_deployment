@@ -1,0 +1,62 @@
+[tool.poetry]
+name = "book-sales-deployment"
+version = "0.1.0"
+description = "Book sales deployment with ZenML"
+authors = ["Zarif Shafiei <zarif@example.com>"]
+packages = [
+    { include = "pipelines" },
+    { include = "steps" },
+    { include = "utils" }
+]
+
+[tool.poetry.dependencies]
+python = ">=3.9,<3.12"
+zenml = "0.84.0"
+
+# Core data science stack - use compatible versions
+numpy = "^1.24.0"
+pandas = "^2.0.0"
+scipy = "^1.10.0"
+scikit-learn = "^1.3.0"
+
+# ML and monitoring
+mlflow = "^2.3.0"
+optuna = "^3.0.0"
+great-expectations = "^0.17.0"
+evidently = "^0.4.0"
+
+# Visualization
+matplotlib = "^3.7.0"
+seaborn = "^0.12.0"
+plotly = "^5.18.0"
+
+# Time series and specialized ML
+pmdarima = "^2.0.4"
+arch = "^5.0.0"
+mpld3 = "^0.5.0"
+
+# Deep learning - use compatible version
+tensorflow = "^2.13.0"
+
+# Utilities
+pyyaml = "^6.0"
+gdown = "^5.2.0"
+openpyxl = "^3.1.2"
+
+# API (optional)
+fastapi = "^0.100.0"
+uvicorn = "^0.22.0"
+
+[tool.poetry.group.dev.dependencies]
+# Code quality and linting
+black = "^23.0.0"
+flake8 = "^6.0.0"
+isort = "^5.12.0"
+
+# Testing
+pytest = "^7.4.0"
+pytest-cov = "^4.1.0"
+
+[build-system]
+requires = ["poetry-core>=1.0.0"]
+build-backend = "poetry.core.masonry.api"

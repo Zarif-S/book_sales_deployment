@@ -1,0 +1,19 @@
+How to Make Your Project Easy to Set Up
+
+🧰 1. A Setup Script (setup.sh)
+
+A Bash script that automates:
+Installing Poetry
+Setting the correct Python version
+Creating the virtual environment
+Installing dependencies
+
+📄 2. A README.md with instructions
+Clear setup and usage instructions — especially for non-technical users.
+
+📦 3. pyproject.toml + poetry.lock
+
+Keep these committed — they define exact dependencies and allow others to reproduce your environment exactly.
+
+🧪 4. Optional: Add a Makefile (if you're into that)
+Useful for defining tasks like make train, make install, etc.

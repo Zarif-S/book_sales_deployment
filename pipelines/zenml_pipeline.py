@@ -1,0 +1,368 @@
+import os
+import pandas as pd
+from typing import Tuple, Annotated, Dict
+
+from zenml import step, pipeline
+from zenml.logger import get_logger
+from zenml import ArtifactConfig
+from zenml.steps import get_step_context
+from zenml.integrations.pandas.materializers.pandas_materializer import PandasMaterializer
+
+# Import your existing modules
+from steps._01_load_data import (
+    get_isbn_data, 
+    get_uk_weekly_data, 
+    get_merged_data,
+    analyze_missing_values,
+    merge_and_fill_author_data,
+    save_raw_data_as_csv
+)
+
+logger = get_logger(__name__)
+
+# Configure step settings to enable metadata
+step_settings = {
+    "enable_artifact_metadata": True,
+    "enable_artifact_visualization": True,
+}
+
+# ------------------ STEPS ------------------ #
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_data")]:
+    """Load ISBN data from Google Sheets and return as DataFrame artifact."""
+    logger.info("Starting ISBN data loading")
+    
+    try:
+        df_isbns = get_isbn_data()
+        
+        # Prepare metadata
+        metadata_dict = {
+            "total_records": len(df_isbns),
+            "columns": list(df_isbns.columns) if hasattr(df_isbns, 'columns') else [],
+            "data_shape": f"{df_isbns.shape[0]} rows x {df_isbns.shape[1]} columns",
+            "source": "Google Sheets - ISBN data",
+            "missing_values": df_isbns.isna().sum().to_dict()
+        }
+        
+        logger.info(f"ISBN data metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="isbn_data",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added ISBN data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add ISBN data metadata: {e}")
+        
+        logger.info(f"Loaded {len(df_isbns)} ISBN records")
+        return df_isbns
+        
+    except Exception as e:
+        logger.error(f"Failed to load ISBN data: {e}")
+        raise
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="uk_weekly_data")]:
+    """Load UK weekly data from Google Sheets and return as DataFrame artifact."""
+    logger.info("Starting UK weekly data loading")
+    
+    try:
+        df_uk_weekly = get_uk_weekly_data()
+        
+        # Prepare metadata
+        metadata_dict = {
+            "total_records": len(df_uk_weekly),
+            "columns": list(df_uk_weekly.columns) if hasattr(df_uk_weekly, 'columns') else [],
+            "data_shape": f"{df_uk_weekly.shape[0]} rows x {df_uk_weekly.shape[1]} columns",
+            "source": "Google Sheets - UK weekly data",
+            "missing_values": df_uk_weekly.isna().sum().to_dict()
+        }
+        
+        logger.info(f"UK weekly data metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="uk_weekly_data",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added UK weekly data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add UK weekly data metadata: {e}")
+        
+        logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records")
+        return df_uk_weekly
+        
+    except Exception as e:
+        logger.error(f"Failed to load UK weekly data: {e}")
+        raise
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def merge_and_fill_data_step(
+    df_isbns: pd.DataFrame, 
+    df_uk_weekly: pd.DataFrame
+) -> Annotated[pd.DataFrame, ArtifactConfig(name="merged_data")]:
+    """Merge ISBN and UK weekly data, fill missing values, and return processed DataFrame."""
+    logger.info("Starting data merging and filling")
+    
+    try:
+        # Merge and fill missing author data
+        df_merged = merge_and_fill_author_data(df_uk_weekly, df_isbns)
+        
+        # Analyze missing values after merging
+        missing_values = analyze_missing_values(df_merged, "Merged")
+        
+        # Prepare metadata
+        metadata_dict = {
+            "total_records": len(df_merged),
+            "columns": list(df_merged.columns) if hasattr(df_merged, 'columns') else [],
+            "data_shape": f"{df_merged.shape[0]} rows x {df_merged.shape[1]} columns",
+            "source": "Merged ISBN and UK weekly data",
+            "missing_values_after_merge": missing_values.to_dict(),
+            "merge_strategy": "left join on ISBN",
+            "fill_strategy": "Author values from ISBN data"
+        }
+        
+        logger.info(f"Merged data metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="merged_data",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added merged data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add merged data metadata: {e}")
+        
+        logger.info(f"Merged and processed {len(df_merged)} records")
+        return df_merged
+        
+    except Exception as e:
+        logger.error(f"Failed to merge and fill data: {e}")
+        raise
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, ArtifactConfig(name="data_quality_report")]:
+    """Analyze data quality and return quality metrics."""
+    logger.info("Starting data quality analysis")
+    
+    try:
+        # Calculate quality metrics
+        total_records = len(df_merged)
+        missing_values = df_merged.isna().sum()
+        missing_percentage = (missing_values / total_records * 100).round(2)
+        
+        # Unique values analysis
+        unique_counts = {}
+        for col in df_merged.columns:
+            unique_counts[col] = df_merged[col].nunique()
+        
+        # Data types
+        data_types = df_merged.dtypes.astype(str).to_dict()
+        
+        # Basic statistics for numeric columns
+        numeric_stats = {}
+        numeric_cols = df_merged.select_dtypes(include=['number']).columns
+        for col in numeric_cols:
+            numeric_stats[col] = {
+                'mean': float(df_merged[col].mean()),
+                'std': float(df_merged[col].std()),
+                'min': float(df_merged[col].min()),
+                'max': float(df_merged[col].max()),
+                'median': float(df_merged[col].median())
+            }
+        
+        quality_report = {
+            "total_records": total_records,
+            "total_columns": len(df_merged.columns),
+            "missing_values_count": missing_values.to_dict(),
+            "missing_values_percentage": missing_percentage.to_dict(),
+            "unique_values_per_column": unique_counts,
+            "data_types": data_types,
+            "numeric_statistics": numeric_stats,
+            "quality_score": round((1 - missing_values.sum() / (total_records * len(df_merged.columns))) * 100, 2)
+        }
+        
+        logger.info(f"Data quality report: {quality_report}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="data_quality_report",
+                metadata=quality_report
+            )
+            logger.info("Successfully added data quality metadata")
+        except Exception as e:
+            logger.error(f"Failed to add data quality metadata: {e}")
+        
+        logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
+        return quality_report
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze data quality: {e}")
+        raise
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def save_raw_data_as_csv_step(
+    df_isbns: pd.DataFrame,
+    df_uk_weekly: pd.DataFrame
+) -> Annotated[Tuple[str, str], ArtifactConfig(name="raw_csv_paths")]:
+    """Save raw data as CSV files in the raw data directory."""
+    logger.info("Starting raw data CSV saving")
+    
+    try:
+        # Save raw data as CSV files
+        isbn_csv_path, uk_csv_path = save_raw_data_as_csv(df_isbns, df_uk_weekly)
+        
+        # Calculate file sizes
+        isbn_file_size_mb = round(os.path.getsize(isbn_csv_path) / (1024*1024), 2)
+        uk_file_size_mb = round(os.path.getsize(uk_csv_path) / (1024*1024), 2)
+        
+        metadata_dict = {
+            "isbn_csv_path": isbn_csv_path,
+            "uk_csv_path": uk_csv_path,
+            "isbn_file_size_mb": isbn_file_size_mb,
+            "uk_file_size_mb": uk_file_size_mb,
+            "isbn_records": len(df_isbns),
+            "uk_records": len(df_uk_weekly),
+            "file_format": "CSV",
+            "saved_at": pd.Timestamp.now().isoformat()
+        }
+        
+        logger.info(f"Raw data CSV saving metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="raw_csv_paths",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added raw data CSV metadata")
+        except Exception as e:
+            logger.error(f"Failed to add raw data CSV metadata: {e}")
+        
+        logger.info(f"Raw data saved as CSV: {isbn_csv_path}, {uk_csv_path}")
+        return isbn_csv_path, uk_csv_path
+        
+    except Exception as e:
+        logger.error(f"Failed to save raw data as CSV: {e}")
+        raise
+
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def save_processed_data_step(
+    df_merged: pd.DataFrame, 
+    output_dir: str
+) -> Annotated[str, ArtifactConfig(name="processed_data_path")]:
+    """Save processed data to CSV and return file path."""
+    logger.info("Starting data saving")
+    
+    try:
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save processed data
+        processed_file_path = os.path.join(output_dir, 'book_sales_processed.csv')
+        df_merged.to_csv(processed_file_path, index=False)
+        
+        # Calculate file size
+        file_size_mb = round(os.path.getsize(processed_file_path) / (1024*1024), 2)
+        
+        metadata_dict = {
+            "file_path": processed_file_path,
+            "file_size_mb": file_size_mb,
+            "total_records": len(df_merged),
+            "total_columns": len(df_merged.columns),
+            "file_format": "CSV",
+            "saved_at": pd.Timestamp.now().isoformat()
+        }
+        
+        logger.info(f"Data saving metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="processed_data_path",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added data saving metadata")
+        except Exception as e:
+            logger.error(f"Failed to add data saving metadata: {e}")
+        
+        logger.info(f"Processed data saved to {processed_file_path}")
+        return processed_file_path
+        
+    except Exception as e:
+        logger.error(f"Failed to save processed data: {e}")
+        raise
+
+# ------------------ PIPELINE ------------------ #
+
+@pipeline
+def book_sales_pipeline(output_dir: str) -> Tuple[pd.DataFrame, Dict, str]:
+    """Book sales data processing pipeline."""
+    logger.info("Running pipeline: book_sales_pipeline")
+    
+    # Load raw data
+    df_isbns = load_isbn_data_step()
+    df_uk_weekly = load_uk_weekly_data_step()
+    
+    # Merge and process data
+    df_merged = merge_and_fill_data_step(
+        df_isbns=df_isbns, 
+        df_uk_weekly=df_uk_weekly
+    )
+    
+    # Analyze data quality
+    quality_report = analyze_data_quality_step(df_merged=df_merged)
+    
+    # Save processed data
+    processed_data_path = save_processed_data_step(
+        df_merged=df_merged, 
+        output_dir=output_dir
+    )
+    
+    return df_merged, quality_report, processed_data_path
+
+# ------------------ MAIN ------------------ #
+
+if __name__ == "__main__":
+    # Set up output directory
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = os.path.join(project_root, 'data', 'processed')
+    
+    # Run the pipeline
+    df_merged, quality_report, processed_data_path = book_sales_pipeline(
+        output_dir=output_dir
+    )
+    
+    print("Pipeline completed successfully!")
+    print(f"Processed data saved to: {processed_data_path}")
+    print(f"Data quality score: {quality_report['quality_score']}%")
+    print(f"Total records processed: {len(df_merged)}")

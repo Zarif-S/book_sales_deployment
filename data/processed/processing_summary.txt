@@ -1,0 +1,8 @@
+Data Processing Summary
+==============================
+
+total_records_processed: 382871
+unique_isbns: 500
+date_range: (Timestamp('2001-01-06 00:00:00'), Timestamp('2024-07-20 00:00:00'))
+selected_books_records: 1541
+isbns_beyond_2024: 61
