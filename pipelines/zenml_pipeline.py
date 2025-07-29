@@ -7,16 +7,12 @@ from zenml.logger import get_logger
 from zenml import ArtifactConfig
 from zenml.steps import get_step_context
 from zenml.integrations.pandas.materializers.pandas_materializer import PandasMaterializer
-
 # Import your existing modules
 from steps._01_load_data import (
     get_isbn_data, 
-    get_uk_weekly_data, 
-    get_merged_data,
-    analyze_missing_values,
-    merge_and_fill_author_data,
-    save_raw_data_as_csv
+    get_uk_weekly_data
 )
+from steps._02_preprocessing import preprocess_loaded_data
 
 logger = get_logger(__name__)
 
@@ -113,54 +109,24 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
 )
-def merge_and_fill_data_step(
-    df_isbns: pd.DataFrame, 
+def preprocess_and_merge_step(
+    df_isbns: pd.DataFrame,
     df_uk_weekly: pd.DataFrame
 ) -> Annotated[pd.DataFrame, ArtifactConfig(name="merged_data")]:
-    """Merge ISBN and UK weekly data, fill missing values, and return processed DataFrame."""
-    logger.info("Starting data merging and filling")
-    
+    """Preprocess and merge ISBN and UK weekly data using the new pipeline."""
+    logger.info("Starting preprocessing and merging of loaded data")
     try:
-        # Merge and fill missing author data
-        df_merged = merge_and_fill_author_data(df_uk_weekly, df_isbns)
-        
-        # Analyze missing values after merging
-        missing_values = analyze_missing_values(df_merged, "Merged")
-        
-        # Prepare metadata
-        metadata_dict = {
-            "total_records": len(df_merged),
-            "columns": list(df_merged.columns) if hasattr(df_merged, 'columns') else [],
-            "data_shape": f"{df_merged.shape[0]} rows x {df_merged.shape[1]} columns",
-            "source": "Merged ISBN and UK weekly data",
-            "missing_values_after_merge": missing_values.to_dict(),
-            "merge_strategy": "left join on ISBN",
-            "fill_strategy": "Author values from ISBN data"
-        }
-        
-        logger.info(f"Merged data metadata: {metadata_dict}")
-        
-        try:
-            context = get_step_context()
-            context.add_output_metadata(
-                output_name="merged_data",
-                metadata=metadata_dict
-            )
-            logger.info("Successfully added merged data metadata")
-        except Exception as e:
-            logger.error(f"Failed to add merged data metadata: {e}")
-        
-        logger.info(f"Merged and processed {len(df_merged)} records")
+        processed = preprocess_loaded_data(df_isbns, df_uk_weekly)
+        df_merged = processed['df_uk_weekly']
+        logger.info(f"Preprocessing and merging complete. Shape: {df_merged.shape}")
         return df_merged
-        
     except Exception as e:
-        logger.error(f"Failed to merge and fill data: {e}")
+        logger.error(f"Failed to preprocess and merge data: {e}")
         raise
 
 @step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
 )
 def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, ArtifactConfig(name="data_quality_report")]:
     """Analyze data quality and return quality metrics."""
@@ -275,7 +241,6 @@ def save_raw_data_as_csv_step(
 @step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
 )
 def save_processed_data_step(
     df_merged: pd.DataFrame, 
@@ -326,29 +291,25 @@ def save_processed_data_step(
 
 @pipeline
 def book_sales_pipeline(output_dir: str) -> Tuple[pd.DataFrame, Dict, str]:
-    """Book sales data processing pipeline."""
-    logger.info("Running pipeline: book_sales_pipeline")
-    
+    """Book sales data processing pipeline (updated for new preprocessing)."""
+    logger.info("Running pipeline: book_sales_pipeline (updated)")
     # Load raw data
     df_isbns = load_isbn_data_step()
     df_uk_weekly = load_uk_weekly_data_step()
-    
-    # Merge and process data
-    df_merged = merge_and_fill_data_step(
-        df_isbns=df_isbns, 
-        df_uk_weekly=df_uk_weekly
-    )
-    
+    # Preprocess and merge
+    df_merged = preprocess_and_merge_step(df_isbns=df_isbns, df_uk_weekly=df_uk_weekly)
     # Analyze data quality
     quality_report = analyze_data_quality_step(df_merged=df_merged)
-    
     # Save processed data
     processed_data_path = save_processed_data_step(
         df_merged=df_merged, 
         output_dir=output_dir
     )
-    
-    return df_merged, quality_report, processed_data_path
+    return {
+    "df_merged": df_merged,
+    "quality_report": quality_report,
+    "processed_data_path": processed_data_path,
+    }
 
 # ------------------ MAIN ------------------ #
 
@@ -356,13 +317,12 @@ if __name__ == "__main__":
     # Set up output directory
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(project_root, 'data', 'processed')
-    
+
     # Run the pipeline
-    df_merged, quality_report, processed_data_path = book_sales_pipeline(
-        output_dir=output_dir
-    )
-    
-    print("Pipeline completed successfully!")
-    print(f"Processed data saved to: {processed_data_path}")
-    print(f"Data quality score: {quality_report['quality_score']}%")
-    print(f"Total records processed: {len(df_merged)}")
+    book_sales_pipeline(output_dir=output_dir)
+    print("Pipeline run submitted! Check the ZenML dashboard for outputs.")
+
+    # If you want to inspect outputs programmatically, 
+    # let me know and I can show you how to do that using ZenML's artifact store 
+    # or by running your logic outside the pipeline system.
+
