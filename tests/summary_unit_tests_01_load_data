@@ -1,0 +1,24 @@
+Key Features of These Advanced Tests:
+1. Integration Tests for get_merged_data
+
+Complete flow testing: Tests the entire data pipeline from config to final output
+Dependency isolation: All external calls (config, loading, saving) are mocked
+Error propagation: Tests how failures in one component affect the whole pipeline
+Edge cases: Empty DataFrames, missing data scenarios
+Contract verification: Ensures correct parameters are passed between functions
+
+2. Performance Tests
+
+Scalable test data: Uses parametrized fixtures to test different dataset sizes
+Realistic thresholds: Performance expectations based on dataset size
+Memory efficiency: Tests ensure operations don't consume excessive memory
+Scaling analysis: Tests how performance degrades with more data/sheets
+Bottleneck identification: Helps identify which operations are slowest
+
+3. External Dependency Mocking
+
+Network isolation: No real HTTP calls during testing
+Caching logic: Tests the file freshness and cache fallback logic
+Error scenarios: Network failures, file corruption, permission issues
+State verification: Ensures correct sequence of external calls
+Fallback behavior: Tests graceful degradation when external services fail

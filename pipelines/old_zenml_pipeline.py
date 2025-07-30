@@ -1,19 +1,28 @@
 import os
 import pandas as pd
-from typing import Tuple, Annotated
+from typing import Tuple, Annotated, Dict
 
 from zenml import step, pipeline
 from zenml.logger import get_logger
 from zenml import ArtifactConfig
 from zenml.steps import get_step_context
-from zenml.pipelines import get_pipeline_context
 from zenml.integrations.pandas.materializers.pandas_materializer import PandasMaterializer
-
 # Import your existing modules
-from scripts._01_load_xml import get_steps_df, get_sleep_df
-from scripts._02_preprocess_step_data import preprocess_steps_func
-from scripts._03_preprocess_sleep_data import preprocess_sleep_func
-from scripts._04_plots import plot_daily_steps_func, plot_daily_sleep_duration_func, plot_hourly_steps_func
+from steps._01_load_data import (
+    get_isbn_data, 
+    get_uk_weekly_data
+)
+from steps._02_preprocessing import preprocess_loaded_data
+from utils.plotting import (
+    plot_weekly_volume_by_isbn,
+    plot_yearly_volume_by_isbn,
+    plot_selected_books_weekly,
+    plot_selected_books_yearly,
+    plot_sales_trends,
+    create_summary_dashboard,
+    save_plot
+)
+from steps._02_preprocessing import get_isbn_to_title_mapping
 
 logger = get_logger(__name__)
 
@@ -30,365 +39,395 @@ step_settings = {
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
 )
-def extract_steps(xml_path: str, extracted_dir: str) -> Annotated[pd.DataFrame, ArtifactConfig(name="raw_steps_data")]:
-    """Extract steps data from XML and return as DataFrame artifact."""
-    logger.info(f"Starting extraction from {xml_path}")
-    
-    if not os.path.exists(xml_path):
-        raise FileNotFoundError(f"XML file not found: {xml_path}")
-    
-    os.makedirs(extracted_dir, exist_ok=True)
-    df = get_steps_df(xml_path)
-
-    # Save CSV for backup (optional)
-    steps_csv_path = os.path.join(extracted_dir, 'steps_raw.csv')
-    df.to_csv(steps_csv_path, index=False)
-
-    # Prepare metadata with better error handling
-    total_records = len(df)
-    columns_list = list(df.columns) if hasattr(df, 'columns') else []
-    
-    date_range_start = ""
-    date_range_end = ""
-    if 'date' in df.columns and not df.empty and df['date'].notnull().any():
-        date_range_start = str(df['date'].min())
-        date_range_end = str(df['date'].max())
-
-    metadata_dict = {
-        "total_records": total_records,
-        "date_range_start": date_range_start,
-        "date_range_end": date_range_end,
-        "columns": columns_list,
-        "file_saved_to": steps_csv_path,
-        "data_shape": f"{df.shape[0]} rows x {df.shape[1]} columns",
-        "extraction_source": xml_path
-    }
-
-    # Log metadata with detailed debugging
-    logger.info(f"Metadata to be logged: {metadata_dict}")
+def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_data")]:
+    """Load ISBN data from Google Sheets and return as DataFrame artifact."""
+    logger.info("Starting ISBN data loading")
     
     try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="raw_steps_data",
-            metadata={
-                "total_records": len(df),
-                "date_range_start": str(df['start_date'].min()) if 'start_date' in df.columns and df['start_date'].notnull().any() else "",
-                "date_range_end": str(df['end_date'].max()) if 'end_date' in df.columns and df['end_date'].notnull().any() else "",
-                "columns": list(df.columns) if hasattr(df, 'columns') else [],
-                "file_saved_to": steps_csv_path
-            }
-        )
-        logger.info("Successfully added output metadata")
+        df_isbns = get_isbn_data()
+        
+        # Prepare metadata
+        metadata_dict = {
+            "total_records": len(df_isbns),
+            "columns": list(df_isbns.columns) if hasattr(df_isbns, 'columns') else [],
+            "data_shape": f"{df_isbns.shape[0]} rows x {df_isbns.shape[1]} columns",
+            "source": "Google Sheets - ISBN data",
+            "missing_values": df_isbns.isna().sum().to_dict()
+        }
+        
+        logger.info(f"ISBN data metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="isbn_data",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added ISBN data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add ISBN data metadata: {e}")
+        
+        logger.info(f"Loaded {len(df_isbns)} ISBN records")
+        return df_isbns
+        
     except Exception as e:
-        logger.error(f"Failed to add metadata: {e}")
-
-    logger.info(f"Extracted {total_records} step records from {xml_path}")
-    return df
-
+        logger.error(f"Failed to load ISBN data: {e}")
+        raise
 
 @step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
 )
-def preprocess_steps(steps_raw_df: pd.DataFrame, processed_dir: str) -> Tuple[pd.DataFrame, pd.DataFrame]:
-    """Preprocess steps data and return processed daily and hourly DataFrames."""
-    logger.info("Starting steps preprocessing")
-    os.makedirs(processed_dir, exist_ok=True)
-
-    temp_csv = os.path.join(processed_dir, 'temp_raw_steps.csv')
-    steps_raw_df.to_csv(temp_csv, index=False)
-
-    processed_paths = preprocess_steps_func(temp_csv, processed_dir)
-    daily_steps_df = pd.read_csv(processed_paths["daily"])
-    hourly_steps_df = pd.read_csv(processed_paths["hourly"])
-
-    # --- metadata ---
-    metadata_dict = {
-        "raw_records": len(steps_raw_df),
-        "daily_records": len(daily_steps_df),
-        "hourly_records": len(hourly_steps_df),
-        "avg_daily_steps": float(daily_steps_df['steps'].mean()) if not daily_steps_df.empty else 0.0,
-        "max_daily_steps": int(daily_steps_df['steps'].max()) if not daily_steps_df.empty else 0,
-        "daily_file_path": processed_paths["daily"],
-        "hourly_file_path": processed_paths["hourly"],
-    }
-    logger.info(f"Preprocessing metadata: {metadata_dict}")
-
-    try:
-        context = get_step_context()
-        context.add_output_metadata(output_name="processed_steps_data", metadata=metadata_dict)
-    except Exception as e:
-        logger.error(f"Failed to add preprocessing metadata: {e}")
-
-    if os.path.exists(temp_csv):
-        os.remove(temp_csv)
-
-    logger.info(f"Processed {len(daily_steps_df)} daily and {len(hourly_steps_df)} hourly step records")
-    return daily_steps_df, hourly_steps_df
-
-
-@step(enable_cache=False, **step_settings)
-def plot_daily_steps(daily_steps_df: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="steps_plot_path")]:
-    """Generate daily steps plot and return path."""
-    logger.info("Generating daily steps plot")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    temp_csv = os.path.join(output_dir, 'temp_daily_steps.csv')
-    daily_steps_df.to_csv(temp_csv, index=False)
-
-    plot_path = plot_daily_steps_func(temp_csv, output_dir)
-    
-    if os.path.exists(temp_csv):
-        os.remove(temp_csv)
-
-    metadata_dict = {
-        "plot_type": "daily_steps",
-        "data_points": len(daily_steps_df),
-        "plot_saved_to": plot_path,
-        "plot_format": "html",
-        "file_size_mb": round(os.path.getsize(plot_path) / (1024*1024), 2) if os.path.exists(plot_path) else 0
-    }
-
-    logger.info(f"Plot metadata: {metadata_dict}")
+def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="uk_weekly_data")]:
+    """Load UK weekly data from Google Sheets and return as DataFrame artifact."""
+    logger.info("Starting UK weekly data loading")
     
     try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="steps_plot_path",
-            metadata=metadata_dict
-        )
-        logger.info("Successfully added plot metadata")
+        df_uk_weekly = get_uk_weekly_data()
+        
+        # Prepare metadata
+        metadata_dict = {
+            "total_records": len(df_uk_weekly),
+            "columns": list(df_uk_weekly.columns) if hasattr(df_uk_weekly, 'columns') else [],
+            "data_shape": f"{df_uk_weekly.shape[0]} rows x {df_uk_weekly.shape[1]} columns",
+            "source": "Google Sheets - UK weekly data",
+            "missing_values": df_uk_weekly.isna().sum().to_dict()
+        }
+        
+        logger.info(f"UK weekly data metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="uk_weekly_data",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added UK weekly data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add UK weekly data metadata: {e}")
+        
+        logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records")
+        return df_uk_weekly
+        
     except Exception as e:
-        logger.error(f"Failed to add plot metadata: {e}")
+        logger.error(f"Failed to load UK weekly data: {e}")
+        raise
 
-    logger.info(f"Daily steps plot saved to {plot_path}")
-    return plot_path
+@step(
+    # enable_cache=False,
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+    output_materializers=PandasMaterializer
+)
+def preprocess_and_merge_step(
+    df_isbns: pd.DataFrame,
+    df_uk_weekly: pd.DataFrame
+) -> Annotated[pd.DataFrame, ArtifactConfig(name="merged_data")]:
+    """Preprocess and merge ISBN and UK weekly data using the new pipeline."""
+    logger.info("Starting preprocessing and merging of loaded data")
+    try:
+        processed = preprocess_loaded_data(df_isbns, df_uk_weekly)
+        df_merged = processed['df_uk_weekly']
+        logger.info(f"Preprocessing and merging complete. Shape: {df_merged.shape}")
+        return df_merged
+    except Exception as e:
+        logger.error(f"Failed to preprocess and merge data: {e}")
+        raise
 
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, ArtifactConfig(name="data_quality_report")]:
+    """Analyze data quality and return quality metrics."""
+    logger.info("Starting data quality analysis")
+    
+    try:
+        # Calculate quality metrics
+        total_records = len(df_merged)
+        missing_values = df_merged.isna().sum()
+        missing_percentage = (missing_values / total_records * 100).round(2)
+        
+        # Unique values analysis
+        unique_counts = {}
+        for col in df_merged.columns:
+            unique_counts[col] = df_merged[col].nunique()
+        
+        # Data types
+        data_types = df_merged.dtypes.astype(str).to_dict()
+        
+        # Basic statistics for numeric columns
+        numeric_stats = {}
+        numeric_cols = df_merged.select_dtypes(include=['number']).columns
+        for col in numeric_cols:
+            numeric_stats[col] = {
+                'mean': float(df_merged[col].mean()),
+                'std': float(df_merged[col].std()),
+                'min': float(df_merged[col].min()),
+                'max': float(df_merged[col].max()),
+                'median': float(df_merged[col].median())
+            }
+        
+        quality_report = {
+            "total_records": total_records,
+            "total_columns": len(df_merged.columns),
+            "missing_values_count": missing_values.to_dict(),
+            "missing_values_percentage": missing_percentage.to_dict(),
+            "unique_values_per_column": unique_counts,
+            "data_types": data_types,
+            "numeric_statistics": numeric_stats,
+            "quality_score": round((1 - missing_values.sum() / (total_records * len(df_merged.columns))) * 100, 2)
+        }
+        
+        logger.info(f"Data quality report: {quality_report}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="data_quality_report",
+                metadata=quality_report
+            )
+            logger.info("Successfully added data quality metadata")
+        except Exception as e:
+            logger.error(f"Failed to add data quality metadata: {e}")
+        
+        logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
+        return quality_report
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze data quality: {e}")
+        raise
 
 @step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
 )
-def extract_sleeps(xml_path: str, extracted_dir: str) -> Annotated[pd.DataFrame, ArtifactConfig(name="raw_sleep_data")]:
-    """Extract sleep data from XML and return as DataFrame artifact."""
-    logger.info(f"Starting sleep extraction from {xml_path}")
-    os.makedirs(extracted_dir, exist_ok=True)
-    df = get_sleep_df(xml_path)
-
-    sleep_csv_path = os.path.join(extracted_dir, 'sleep_raw.csv')
-    df.to_csv(sleep_csv_path, index=False)
-
-    # Prepare metadata safely
-    sleep_types = []
-    date_range_start = ""
-    date_range_end = ""
-    
-    if 'type' in df.columns and not df.empty and df['type'].notnull().any():
-        sleep_types = df['type'].unique().tolist()
-    
-    if 'date' in df.columns and not df.empty and df['date'].notnull().any():
-        date_range_start = str(df['date'].min())
-        date_range_end = str(df['date'].max())
-
-    metadata_dict = {
-        "total_sleep_records": len(df),
-        "date_range_start": date_range_start,
-        "date_range_end": date_range_end,
-        "sleep_types": sleep_types,
-        "file_saved_to": sleep_csv_path,
-        "data_shape": f"{df.shape[0]} rows x {df.shape[1]} columns"
-    }
-
-    logger.info(f"Sleep extraction metadata: {metadata_dict}")
+def save_raw_data_as_csv_step(
+    df_isbns: pd.DataFrame,
+    df_uk_weekly: pd.DataFrame
+) -> Annotated[Tuple[str, str], ArtifactConfig(name="raw_csv_paths")]:
+    """Save raw data as CSV files in the raw data directory."""
+    logger.info("Starting raw data CSV saving")
     
     try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="raw_sleep_data",
-            metadata={
-                "total_sleep_records": len(df),
-                "date_range_start": str(df['start_date'].min()) if 'start_date' in df.columns and df['start_date'].notnull().any() else "",
-                "date_range_end": str(df['end_date'].max()) if 'end_date' in df.columns and df['end_date'].notnull().any() else "",
-                "sleep_types": df['type'].unique().tolist() if 'type' in df.columns and df['type'].notnull().any() else [],
-                "file_saved_to": sleep_csv_path
-            }
-        )
-        logger.info("Successfully added sleep extraction metadata")
+        # Save raw data as CSV files
+        isbn_csv_path, uk_csv_path = save_raw_data_as_csv(df_isbns, df_uk_weekly)
+        
+        # Calculate file sizes
+        isbn_file_size_mb = round(os.path.getsize(isbn_csv_path) / (1024*1024), 2)
+        uk_file_size_mb = round(os.path.getsize(uk_csv_path) / (1024*1024), 2)
+        
+        metadata_dict = {
+            "isbn_csv_path": isbn_csv_path,
+            "uk_csv_path": uk_csv_path,
+            "isbn_file_size_mb": isbn_file_size_mb,
+            "uk_file_size_mb": uk_file_size_mb,
+            "isbn_records": len(df_isbns),
+            "uk_records": len(df_uk_weekly),
+            "file_format": "CSV",
+            "saved_at": pd.Timestamp.now().isoformat()
+        }
+        
+        logger.info(f"Raw data CSV saving metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="raw_csv_paths",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added raw data CSV metadata")
+        except Exception as e:
+            logger.error(f"Failed to add raw data CSV metadata: {e}")
+        
+        logger.info(f"Raw data saved as CSV: {isbn_csv_path}, {uk_csv_path}")
+        return isbn_csv_path, uk_csv_path
+        
     except Exception as e:
-        logger.error(f"Failed to add sleep extraction metadata: {e}")
-
-    logger.info(f"Extracted {len(df)} sleep records from {xml_path}")
-    return df
-
+        logger.error(f"Failed to save raw data as CSV: {e}")
+        raise
 
 @step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer,
-    enable_cache=False,
 )
-def preprocess_sleep(sleep_raw_df: pd.DataFrame, processed_dir: str) -> Annotated[pd.DataFrame, ArtifactConfig(name="processed_sleep_data")]:
-    """Preprocess sleep data and return processed DataFrame."""
-    logger.info("Starting sleep preprocessing")
-    os.makedirs(processed_dir, exist_ok=True)
-
-    temp_csv = os.path.join(processed_dir, 'temp_raw_sleep.csv')
-    sleep_raw_df.to_csv(temp_csv, index=False)
-
-    processed_csv_path = preprocess_sleep_func(temp_csv, processed_dir)
-    processed_df = pd.read_csv(processed_csv_path)
-    
-    if os.path.exists(temp_csv):
-        os.remove(temp_csv)
-
-    # Calculate sleep statistics safely
-    avg_sleep_duration = 0.0
-    min_sleep_duration = 0.0
-    max_sleep_duration = 0.0
-    
-    if 'duration' in processed_df.columns and not processed_df.empty:
-        avg_sleep_duration = float(processed_df['duration'].mean())
-        min_sleep_duration = float(processed_df['duration'].min())
-        max_sleep_duration = float(processed_df['duration'].max())
-
-    metadata_dict = {
-        "raw_sleep_records": len(sleep_raw_df),
-        "processed_records": len(processed_df),
-        "avg_sleep_duration": avg_sleep_duration,
-        "min_sleep_duration": min_sleep_duration,
-        "max_sleep_duration": max_sleep_duration,
-        "processed_file_path": processed_csv_path,
-        "sleep_duration_unit": "hours"  # Assuming your duration is in hours
-    }
-
-    logger.info(f"Sleep preprocessing metadata: {metadata_dict}")
+def save_processed_data_step(
+    df_merged: pd.DataFrame, 
+    output_dir: str
+) -> Annotated[str, ArtifactConfig(name="processed_data_path")]:
+    """Save processed data to CSV and return file path."""
+    logger.info("Starting data saving")
     
     try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="processed_sleep_data",
-            metadata=metadata_dict
-        )
-        logger.info("Successfully added sleep preprocessing metadata")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save processed data
+        processed_file_path = os.path.join(output_dir, 'book_sales_processed.csv')
+        df_merged.to_csv(processed_file_path, index=False)
+        
+        # Calculate file size
+        file_size_mb = round(os.path.getsize(processed_file_path) / (1024*1024), 2)
+        
+        metadata_dict = {
+            "file_path": processed_file_path,
+            "file_size_mb": file_size_mb,
+            "total_records": len(df_merged),
+            "total_columns": len(df_merged.columns),
+            "file_format": "CSV",
+            "saved_at": pd.Timestamp.now().isoformat()
+        }
+        
+        logger.info(f"Data saving metadata: {metadata_dict}")
+        
+        try:
+            context = get_step_context()
+            context.add_output_metadata(
+                output_name="processed_data_path",
+                metadata=metadata_dict
+            )
+            logger.info("Successfully added data saving metadata")
+        except Exception as e:
+            logger.error(f"Failed to add data saving metadata: {e}")
+        
+        logger.info(f"Processed data saved to {processed_file_path}")
+        return processed_file_path
+        
     except Exception as e:
-        logger.error(f"Failed to add sleep preprocessing metadata: {e}")
+        logger.error(f"Failed to save processed data: {e}")
+        raise
 
-    logger.info(f"Processed to {len(processed_df)} daily sleep duration records")
-    return processed_df
+# ------------------ PLOT STEPS ------------------ #
 
-
-@step(enable_cache=False, **step_settings)
-def plot_daily_sleep_duration(daily_sleep_df: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="sleep_plot_path")]:
-    """Generate daily sleep duration plot and return path."""
-    logger.info("Generating daily sleep duration plot")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    temp_csv = os.path.join(output_dir, 'temp_daily_sleep.csv')
-    daily_sleep_df.to_csv(temp_csv, index=False)
-
-    plot_path = plot_daily_sleep_duration_func(temp_csv, output_dir)
-    
-    if os.path.exists(temp_csv):
-        os.remove(temp_csv)
-
-    metadata_dict = {
-        "plot_type": "daily_sleep_duration",
-        "data_points": len(daily_sleep_df),
-        "plot_saved_to": plot_path,
-        "plot_format": "html",
-        "file_size_mb": round(os.path.getsize(plot_path) / (1024*1024), 2) if os.path.exists(plot_path) else 0
-    }
-
-    logger.info(f"Sleep plot metadata: {metadata_dict}")
-    
-    try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="sleep_plot_path",
-            metadata=metadata_dict
-        )
-        logger.info("Successfully added sleep plot metadata")
-    except Exception as e:
-        logger.error(f"Failed to add sleep plot metadata: {e}")
-
-    logger.info(f"Daily sleep plot saved to {plot_path}")
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_weekly_volume_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="weekly_volume_plot_path")]:
+    """Generate and save weekly volume plot."""
+    import os
+    plot_path = os.path.join(output_dir, "first_12_years_sales.html")
+    fig = plot_weekly_volume_by_isbn(df_merged)
+    save_plot(fig, plot_path)
     return plot_path
 
-@step(enable_cache=False, **step_settings)
-def plot_hourly_steps(hourly_steps_df: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="hourly_steps_plot_path")]:
-    """Generate hourly steps plot and return path."""
-    logger.info("Generating hourly steps plot")
-    os.makedirs(output_dir, exist_ok=True)
-    
-    temp_csv = os.path.join(output_dir, 'temp_hourly_steps.csv')
-    hourly_steps_df.to_csv(temp_csv, index=False)
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_yearly_volume_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="yearly_volume_plot_path")]:
+    """Generate and save yearly volume plot."""
+    import os
+    plot_path = os.path.join(output_dir, "last_12_years_sales.html")
+    fig = plot_yearly_volume_by_isbn(df_merged)
+    save_plot(fig, plot_path)
+    return plot_path
 
-    # You will need to create this function in your plots module
-    plot_path = plot_hourly_steps_func(temp_csv, output_dir)
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_selected_books_weekly_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="selected_books_weekly_plot_path")]:
+    """Generate and save weekly plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "selected_books_weekly.html")
+    fig = plot_selected_books_weekly(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
 
-    if os.path.exists(temp_csv):
-        os.remove(temp_csv)
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_selected_books_yearly_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="selected_books_yearly_plot_path")]:
+    """Generate and save yearly plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "selected_books_yearly.html")
+    fig = plot_selected_books_yearly(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
 
-    metadata_dict = {
-        "plot_type": "hourly_steps",
-        "data_points": len(hourly_steps_df),
-        "plot_saved_to": plot_path,
-        "plot_format": "html",
-        "file_size_mb": round(os.path.getsize(plot_path) / (1024*1024), 2) if os.path.exists(plot_path) else 0
-    }
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_sales_trends_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="sales_trends_plot_path")]:
+    """Generate and save sales trends plot for selected books."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    isbn_list = list(isbn_to_title.keys())
+    plot_path = os.path.join(output_dir, "sales_trends_analysis.html")
+    fig = plot_sales_trends(df_merged, isbn_list, isbn_to_title)
+    save_plot(fig, plot_path)
+    return plot_path
 
-    logger.info(f"Hourly steps plot metadata: {metadata_dict}")
-    
-    try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name="hourly_steps_plot_path",
-            metadata=metadata_dict
-        )
-        logger.info("Successfully added hourly plot metadata")
-    except Exception as e:
-        logger.error(f"Failed to add hourly plot metadata: {e}")
-
-    logger.info(f"Hourly steps plot saved to {plot_path}")
+@step(
+    enable_artifact_metadata=True,
+    enable_artifact_visualization=True,
+)
+def plot_summary_dashboard_step(df_merged: pd.DataFrame, output_dir: str) -> Annotated[str, ArtifactConfig(name="summary_dashboard_plot_path")]:
+    """Generate and save summary dashboard plot."""
+    import os
+    isbn_to_title = get_isbn_to_title_mapping()
+    plot_path = os.path.join(output_dir, "summary_dashboard.html")
+    fig = create_summary_dashboard(df_merged, isbn_to_title)
+    save_plot(fig, plot_path)
     return plot_path
 
 # ------------------ PIPELINE ------------------ #
 
 @pipeline
-def apple_health_pipeline(xml_path: str, extracted_dir: str, processed_dir: str, plot_dir: str) -> Tuple[str, str, str]:
-    """Apple Health data processing pipeline with hourly steps plot."""
-    logger.info(f"Running pipeline: apple_health_pipeline")
-
-    # Steps pipeline
-    steps_raw_df = extract_steps(xml_path=xml_path, extracted_dir=extracted_dir)
-    daily_steps_df, hourly_steps_df = preprocess_steps(steps_raw_df=steps_raw_df, processed_dir=processed_dir)
-    plot_steps_html_path = plot_daily_steps(daily_steps_df=daily_steps_df, output_dir=plot_dir)
-    plot_hourly_steps_html_path = plot_hourly_steps(hourly_steps_df=hourly_steps_df, output_dir=plot_dir)
-
-    # Sleep pipeline  
-    sleep_raw_df = extract_sleeps(xml_path=xml_path, extracted_dir=extracted_dir)
-    processed_sleep_df = preprocess_sleep(sleep_raw_df=sleep_raw_df, processed_dir=processed_dir)
-    plot_sleep_html_path = plot_daily_sleep_duration(daily_sleep_df=processed_sleep_df, output_dir=plot_dir)
-
-    return plot_steps_html_path, plot_hourly_steps_html_path, plot_sleep_html_path
+def book_sales_pipeline(output_dir: str) -> Dict:
+    """Book sales data processing pipeline (updated for new preprocessing)."""
+    logger.info("Running pipeline: book_sales_pipeline (updated)")
+    # Load raw data
+    df_isbns = load_isbn_data_step()
+    df_uk_weekly = load_uk_weekly_data_step()
+    # Preprocess and merge
+    df_merged = preprocess_and_merge_step(df_isbns=df_isbns, df_uk_weekly=df_uk_weekly)
+    # Analyze data quality
+    quality_report = analyze_data_quality_step(df_merged=df_merged)
+    # Save processed data
+    processed_data_path = save_processed_data_step(
+        df_merged=df_merged, 
+        output_dir=output_dir
+    )
+    # Plot outputs (store in outputs/ directory)
+    plot_dir = os.path.join(os.path.dirname(output_dir), 'outputs')
+    os.makedirs(plot_dir, exist_ok=True)
+    weekly_plot_path = plot_weekly_volume_step(df_merged=df_merged, output_dir=plot_dir)
+    yearly_plot_path = plot_yearly_volume_step(df_merged=df_merged, output_dir=plot_dir)
+    selected_books_weekly_path = plot_selected_books_weekly_step(df_merged=df_merged, output_dir=plot_dir)
+    selected_books_yearly_path = plot_selected_books_yearly_step(df_merged=df_merged, output_dir=plot_dir)
+    sales_trends_path = plot_sales_trends_step(df_merged=df_merged, output_dir=plot_dir)
+    summary_dashboard_path = plot_summary_dashboard_step(df_merged=df_merged, output_dir=plot_dir)
+    return {
+        "df_merged": df_merged,
+        "quality_report": quality_report,
+        "processed_data_path": processed_data_path,
+        "weekly_plot_path": weekly_plot_path,
+        "yearly_plot_path": yearly_plot_path,
+        "selected_books_weekly_path": selected_books_weekly_path,
+        "selected_books_yearly_path": selected_books_yearly_path,
+        "sales_trends_path": sales_trends_path,
+        "summary_dashboard_path": summary_dashboard_path,
+    }
 
 # ------------------ MAIN ------------------ #
 
 if __name__ == "__main__":
-    project_root = os.path.expanduser('~/Documents/Projects/apple_watch_project')
-    xml_path = os.path.join(project_root, 'data', 'raw', 'apple_health_export', 'export.xml')
-    extracted_dir = os.path.join(project_root, 'data', 'extracted')
-    processed_dir = os.path.join(project_root, 'data', 'processed')
-    plot_dir = os.path.join(project_root, 'data', 'plots')
+    # Set up output directory
+    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    output_dir = os.path.join(project_root, 'data', 'processed')
 
-    apple_health_pipeline(
-        xml_path=xml_path,
-        extracted_dir=extracted_dir,
-        processed_dir=processed_dir,
-        plot_dir=plot_dir
-    )
+    # Run the pipeline
+    book_sales_pipeline(output_dir=output_dir)
+    print("Pipeline run submitted! Check the ZenML dashboard for outputs.")
 
-    print("Pipeline completed successfully!")
+    # If you want to inspect outputs programmatically, 
+    # let me know and I can show you how to do that using ZenML's artifact store 
+    # or by running your logic outside the pipeline system.
+
