@@ -3,7 +3,7 @@ name: Python Tests
 on:
   workflow_dispatch:    # Allows manual trigger
   push:
-    branches: [ main ]  # Triggers when you push to main
+    branches: [ master ]  # Triggers when you push to main
   pull_request:         # Triggers on PRs
 
 jobs:
