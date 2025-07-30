@@ -205,4 +205,6 @@ if __name__ == '__main__':
     
     print("\nData loading completed successfully!")
     print(f"ISBN data shape: {df_isbns.shape}")
-    print(f"UK weekly data shape: {df_uk_weekly.shape}") 
+    print(f"UK weekly data shape: {df_uk_weekly.shape}")
+
+    # dummy change
