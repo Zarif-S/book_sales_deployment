@@ -129,6 +129,9 @@ def validate_date_format(date_string: str) -> bool:
     Returns:
         True if valid, False otherwise
     """
+    # Add this check for strict YYYY-MM-DD format
+    if not isinstance(date_string, str) or len(date_string) != 10:
+        return False
     try:
         datetime.strptime(date_string, '%Y-%m-%d')
         return True
@@ -287,6 +290,7 @@ def fill_missing_weeks(df: pd.DataFrame) -> pd.DataFrame:
     """
     logger.info("Filling missing weeks with 0 sales...")
     
+    # FIX: Validate the input DataFrame at the beginning
     if 'ISBN' not in df.columns:
         raise ValueError("'ISBN' column not found in DataFrame")
     
@@ -297,18 +301,20 @@ def fill_missing_weeks(df: pd.DataFrame) -> pd.DataFrame:
         if i % 100 == 0:  # Progress logging
             logger.info(f"Processing ISBN group {i+1}/{total_groups}")
         
-        # Fill missing weeks with 0 for numeric columns, forward fill for others
-        group_filled = group.asfreq('W-SAT')
-        
+        # FIX: Use resample() to aggregate data into weekly bins, then select the first entry.
+        # This preserves data that doesn't fall exactly on the week-end date.
+        group_filled = group.resample('W-SAT').first()
+    
         # Fill numeric columns with 0
         for col in config.NUMERIC_COLUMNS:
             if col in group_filled.columns:
                 group_filled[col] = group_filled[col].fillna(0)
         
-        # Forward fill categorical columns
+        # FIX: This is the correct placement for the updated logic
+        # It replaces the old line.
         for col in config.CATEGORICAL_COLUMNS:
             if col in group_filled.columns:
-                group_filled[col] = group_filled[col].fillna(method='ffill')
+                group_filled[col] = group_filled[col].ffill().bfill()
         
         # Ensure ISBN is preserved
         group_filled['ISBN'] = isbn
@@ -425,7 +431,7 @@ def get_book_summary(df: pd.DataFrame, book_titles: List[str]) -> pd.DataFrame:
     
     # Define aggregation based on available columns
     agg_dict = {
-        'ISBN': 'size',  # Count the number of rows (occurrences)
+        'Count': ('ISBN', 'count'),  # Use count on a non-null column
     }
     
     # Add numeric aggregations if columns exist
@@ -444,7 +450,6 @@ def get_book_summary(df: pd.DataFrame, book_titles: List[str]) -> pd.DataFrame:
         group_cols.append('RRP')
     
     book_summary = filtered_books.groupby(group_cols).agg(**agg_dict).reset_index()
-    book_summary.rename(columns={'ISBN': 'Count'}, inplace=True)
     
     logger.info(f"Generated summary for {len(book_summary)} unique book variations")
     return book_summary
