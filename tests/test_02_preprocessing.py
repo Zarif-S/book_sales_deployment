@@ -12,9 +12,29 @@ from datetime import datetime, timedelta
 from unittest.mock import patch, MagicMock
 import logging
 
-# Import the functions to test (assuming the module is named 'preprocessing')
-# from preprocessing import *
-# For this example, I'll assume the functions are available in the current namespace
+# Import the functions to test from the preprocessing module
+from steps._02_preprocessing import (
+    validate_required_columns,
+    validate_date_format,
+    convert_data_types,
+    prepare_time_series_data,
+    fill_missing_weeks,
+    filter_data_by_date,
+    merge_and_fill_author_data,
+    get_isbns_beyond_date,
+    get_book_summary,
+    aggregate_yearly_data,
+    validate_preprocessing_inputs,
+    create_resampling_aggregation_dict,
+    select_specific_books,
+    analyze_missing_values,
+    get_data_info,
+    get_isbn_to_title_mapping,
+    get_project_directories,
+    ensure_directory_exists,
+    config
+)
+
 
 class TestValidationFunctions:
     """Test suite for validation functions."""
@@ -997,13 +1017,22 @@ class TestIntegrationScenarios:
 def sample_sales_data():
     """Fixture providing sample sales data for tests."""
     dates = pd.date_range('2023-01-01', '2023-03-31', freq='W-SAT')
+    volumes = [100, 150, 200, 175, 125, 180, 160, 140, 190, 155, 165, 185, 175]
+    values = [10.0, 15.0, 20.0, 17.5, 12.5, 18.0, 16.0, 14.0, 19.0, 15.5, 16.5, 18.5, 17.5]
+    
+    # Ensure all arrays have the same length
+    min_length = min(len(dates), len(volumes), len(values))
+    dates = dates[:min_length]
+    volumes = volumes[:min_length]
+    values = values[:min_length]
+    
     return pd.DataFrame({
-        'ISBN': ['123'] * len(dates),
+        'ISBN': ['123'] * min_length,
         'End Date': dates,
-        'Volume': [100, 150, 200, 175, 125, 180, 160, 140, 190, 155, 165, 185, 175],
-        'Value': [10.0, 15.0, 20.0, 17.5, 12.5, 18.0, 16.0, 14.0, 19.0, 15.5, 16.5, 18.5, 17.5],
-        'Title': ['Test Book'] * len(dates),
-        'Author': ['Test Author'] * len(dates)
+        'Volume': volumes,
+        'Value': values,
+        'Title': ['Test Book'] * min_length,
+        'Author': ['Test Author'] * min_length
     })
 
 
