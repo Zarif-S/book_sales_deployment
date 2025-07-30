@@ -3,7 +3,7 @@ name: Python Tests
 on:
   workflow_dispatch: # Allows manual trigger
   push:
-    branches: [ master, main ] # Include both common default branch names
+    branches: [ master, main ] # Include both common default branch names in case I change it some day...(to do list)
   pull_request:
     branches: [ master, main ]
 
