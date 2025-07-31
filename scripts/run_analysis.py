@@ -76,40 +76,6 @@ def load_real_data() -> pd.DataFrame:
         raise FileNotFoundError("No data files found")
 
 
-def load_sample_data() -> pd.DataFrame:
-    """
-    Load sample data for demonstration purposes.
-    This is kept as a fallback option.
-    
-    Returns:
-        Sample DataFrame with book sales data
-    """
-    logger.info("Loading sample data...")
-    
-    # Create sample data structure similar to the original
-    # This is a placeholder - replace with your actual data loading logic
-    sample_data = {
-        'End Date': pd.date_range('2001-01-01', '2024-12-31', freq='W'),
-        'ISBN': ['9780722532935', '9780241003008', '9780140500875'] * 1000,
-        'Value': [10.0, 15.0, 8.0] * 1000,
-        'ASP': [9.5, 14.0, 7.5] * 1000,
-        'RRP': [12.0, 18.0, 10.0] * 1000,
-        'Volume': [100, 150, 80] * 1000,
-        'Title': ['Alchemist, The', 'Very Hungry Caterpillar, The', 'Very Hungry Caterpillar, The'] * 1000,
-        'Author': ['Paulo Coelho', 'Eric Carle', 'Eric Carle'] * 1000,
-        'Binding': ['Paperback', 'Hardback', 'Paperback'] * 1000,
-        'Imprint': ['HarperCollins', 'Penguin', 'Penguin'] * 1000,
-        'Publisher Group': ['HarperCollins', 'Penguin Random House', 'Penguin Random House'] * 1000,
-        'Product Class': ['Fiction', 'Children', 'Children'] * 1000,
-        'Source': ['Nielsen', 'Nielsen', 'Nielsen'] * 1000
-    }
-    
-    df = pd.DataFrame(sample_data)
-    logger.info(f"Sample data loaded with shape: {df.shape}")
-    
-    return df
-
-
 def run_complete_analysis():
     """
     Run the complete book sales analysis pipeline.
@@ -120,8 +86,8 @@ def run_complete_analysis():
     try:
         df_raw = load_real_data()
     except FileNotFoundError:
-        logger.warning("Real data not available, using sample data...")
-        df_raw = load_sample_data()
+        logger.error("Real data not available. Please ensure you have data files in data/raw/ or processed data in data/processed/")
+        raise
     
     # Step 2: Check if data is already processed
     if hasattr(df_raw, 'attrs') and df_raw.attrs.get('already_processed', False):
@@ -173,38 +139,25 @@ def run_complete_analysis():
     
     # Plot 3: Selected books weekly data
     if not selected_books_data.empty:
-        fig3 = plot_selected_books_weekly(
-            selected_books_data,
-            isbn_to_title,
-            "Weekly Sales Data for Selected Books (2012 Onwards)"
-        )
+        fig3 = plot_selected_books_weekly(selected_books_data, isbn_to_title)
         display_plot(fig3)
         save_plot(fig3, "outputs/selected_books_weekly.html")
-        
-        # Plot 4: Selected books yearly data
-        fig4 = plot_selected_books_yearly(
-            selected_books_data,
-            isbn_to_title,
-            "Yearly Sales Data for Selected Books (From 2012 Onward)"
-        )
+    
+    # Plot 4: Selected books yearly data
+    if not selected_books_data.empty:
+        fig4 = plot_selected_books_yearly(selected_books_data, isbn_to_title)
         display_plot(fig4)
         save_plot(fig4, "outputs/selected_books_yearly.html")
-        
-        # Plot 5: Sales trends analysis
-        selected_isbns = list(isbn_to_title.keys())
-        fig5 = plot_sales_trends(
-            selected_books_data,
-            selected_isbns,
-            isbn_to_title,
-            "Sales Trends Analysis for Selected Books"
-        )
-        display_plot(fig5)
-        save_plot(fig5, "outputs/sales_trends_analysis.html")
-        
-        # Plot 6: Summary dashboard
-        fig6 = create_summary_dashboard(selected_books_data, isbn_to_title)
-        display_plot(fig6)
-        save_plot(fig6, "outputs/summary_dashboard.html")
+    
+    # Plot 5: Sales trends analysis
+    fig5 = plot_sales_trends(df_processed, list(isbn_to_title.keys()), isbn_to_title, "Sales Trends Analysis for All Books")
+    display_plot(fig5)
+    save_plot(fig5, "outputs/sales_trends_analysis.html")
+    
+    # Plot 6: Summary dashboard
+    fig6 = create_summary_dashboard(df_processed, selected_books_data, isbn_to_title)
+    display_plot(fig6)
+    save_plot(fig6, "outputs/summary_dashboard.html")
     
     logger.info("Analysis completed successfully!")
 
@@ -222,8 +175,8 @@ def run_specific_analysis(analysis_type: str):
     try:
         df_raw = load_real_data()
     except FileNotFoundError:
-        logger.warning("Real data not available, using sample data...")
-        df_raw = load_sample_data()
+        logger.error("Real data not available. Please ensure you have data files in data/raw/ or processed data in data/processed/")
+        raise
     
     # Check if data is already processed
     if hasattr(df_raw, 'attrs') and df_raw.attrs.get('already_processed', False):
@@ -241,44 +194,55 @@ def run_specific_analysis(analysis_type: str):
     isbn_to_title = get_isbn_to_title_mapping()
     
     if analysis_type == 'preprocessing':
-        # Focus on data preprocessing
-        logger.info("Running preprocessing analysis...")
+        # Show preprocessing results
+        logger.info("Preprocessing analysis:")
+        logger.info(f"Original data shape: {df_raw.shape}")
+        logger.info(f"Processed data shape: {df_processed.shape}")
+        logger.info(f"Selected books data shape: {selected_books_data.shape}")
         
-        # Get ISBNs beyond 2024-07-01
-        isbns_beyond_2024 = get_isbns_beyond_date(df_processed, '2024-07-01')
-        logger.info(f"ISBNs with data beyond 2024-07-01: {isbns_beyond_2024}")
-        
-        # Get data info
+        # Show data info
         data_info = get_data_info(df_processed)
-        logger.info(f"Dataset information: {data_info}")
+        logger.info(f"Dataset info: {data_info}")
         
     elif analysis_type == 'plotting':
-        # Focus on plotting
-        logger.info("Running plotting analysis...")
+        # Create basic plots
+        logger.info("Creating basic plots...")
         
-        # Create various plots
-        fig1 = plot_weekly_volume_by_isbn(df_processed, "All Books Weekly Volume")
-        fig2 = plot_yearly_volume_by_isbn(df_processed, "All Books Yearly Volume")
+        # Weekly volume plot
+        df_beyond_2024 = filter_data_by_date(df_processed, '2024-07-01')
+        if not df_beyond_2024.empty:
+            fig1 = plot_weekly_volume_by_isbn(
+                df_beyond_2024,
+                "Weekly Volume for Each ISBN > 2024-07-01"
+            )
+            display_plot(fig1)
+            save_plot(fig1, "outputs/weekly_volume_beyond_2024.html")
         
-        display_plot(fig1)
+        # Sales trends
+        fig2 = plot_sales_trends(df_processed, list(isbn_to_title.keys()), isbn_to_title, "Sales Trends Analysis for All Books")
         display_plot(fig2)
+        save_plot(fig2, "outputs/sales_trends_analysis.html")
         
     elif analysis_type == 'comparison':
-        # Focus on comparison analysis
-        logger.info("Running comparison analysis...")
+        # Create comparison plots
+        logger.info("Creating comparison plots...")
         
-        # Compare different time periods
         fig1, fig2 = plot_sales_comparison(
             df_processed,
             period1_start='2001-01-01', period1_end='2012-12-31',
-            period2_start='2013-01-01', period2_end='2024-12-31'
+            period2_start='2013-01-01', period2_end='2024-12-31',
+            title="Sales Comparison: First 12 Years vs Last 12 Years"
         )
-        
         display_plot(fig1)
         display_plot(fig2)
-    
+        save_plot(fig1, "outputs/first_12_years_sales.html")
+        save_plot(fig2, "outputs/last_12_years_sales.html")
+        
     else:
         logger.error(f"Unknown analysis type: {analysis_type}")
+        logger.info("Available types: preprocessing, plotting, comparison")
+    
+    logger.info(f"{analysis_type} analysis completed!")
 
 
 def main():

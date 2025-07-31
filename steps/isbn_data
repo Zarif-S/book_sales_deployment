@@ -1,0 +1,4 @@
+# Filter for the first ISBN (The Alchemist)
+book1_data_alchemist = filtered_sales_data_2_books[filtered_sales_data_2_books['ISBN'] == '9780722532935']
+# Filter for the second ISBN (The Very Hungry Caterpillar)
+book2_data_caterpillar = filtered_sales_data_2_books[filtered_sales_data_2_books['ISBN'] == '9780241003008']

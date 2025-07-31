@@ -115,7 +115,7 @@ pip install -e .
 
 ### 2. Run Analysis
 ```bash
-# Run complete analysis with sample data
+# Run complete analysis with real data
 python scripts/run_analysis.py
 
 # Run specific analysis type

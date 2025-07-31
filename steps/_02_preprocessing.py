@@ -42,8 +42,7 @@ class PreprocessingConfig:
         if self.DEFAULT_SELECTED_ISBNS is None:
             self.DEFAULT_SELECTED_ISBNS = [
                 '9780722532935',  # The Alchemist
-                '9780241003008',  # The Very Hungry Caterpillar
-                '9780140500875'   # The Very Hungry Caterpillar (different edition)
+                '9780241003008'   # The Very Hungry Caterpillar
             ]
         
         if self.REQUIRED_COLUMNS is None:
@@ -70,8 +69,7 @@ def get_isbn_to_title_mapping() -> Dict[str, str]:
     """
     return {
         '9780722532935': 'Alchemist, The',
-        '9780241003008': 'Very Hungry Caterpillar, The',
-        '9780140500875': 'Very Hungry Caterpillar, The'
+        '9780241003008': 'Very Hungry Caterpillar, The'
     }
 
 def ensure_directory_exists(directory_path: str) -> str:

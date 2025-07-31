@@ -4,7 +4,7 @@ Data Processing Summary
 total_records_processed: 382871
 unique_isbns: 500
 date_range: (Timestamp('2001-01-06 00:00:00'), Timestamp('2024-07-20 00:00:00'))
-selected_books_records: 1541
+selected_books_records: 1310
 isbns_beyond_cutoff: 61
 cutoff_date_used: 2024-07-01
-processing_timestamp: 2025-07-29T16:21:57.760949
+processing_timestamp: 2025-07-31T13:37:18.026621
