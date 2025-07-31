@@ -15,6 +15,7 @@ from steps._01_load_data import (
 )
 from steps._02_preprocessing import preprocess_loaded_data
 from steps._03_5_modelling_prep import prepare_data_after_2012, prepare_multiple_books_data
+from steps._04_arima_zenml_mlflow_optuna import train_arima_optuna_step
 
 logger = get_logger(__name__)
 
@@ -261,7 +262,7 @@ def prepare_modelling_data_step(
         split_size: Number of entries to include in test set (default: 32 weeks)
     
     Returns:
-        Dictionary containing train/test data for each book
+        DataFrame containing train/test data for each book
     """
     logger.info("Starting modelling data preparation")
     
@@ -415,19 +416,25 @@ def prepare_modelling_data_step(
 # ------------------ PIPELINE ------------------ #
 
 @pipeline
-def book_sales_pipeline_with_modelling_prep(
+def book_sales_arima_pipeline(
     output_dir: str,
     selected_isbns: List[str] = None,
     column_name: str = 'Volume',
     split_size: int = 32
 ) -> Dict:
     """
-    Book sales data processing pipeline with modelling preparation.
+    Complete book sales data processing and ARIMA modeling pipeline.
     
-    This pipeline extends the basic processing pipeline by adding a step
-    to prepare data specifically for ARIMA modeling.
+    This pipeline:
+    1. Loads ISBN and UK weekly sales data
+    2. Preprocesses and merges the data
+    3. Analyzes data quality
+    4. Saves processed data
+    5. Prepares data for ARIMA modeling
+    6. Trains ARIMA models with Optuna optimization
+    7. Returns comprehensive results including model performance metrics
     """
-    logger.info("Running pipeline: book_sales_pipeline_with_modelling_prep")
+    logger.info("Running complete book sales ARIMA pipeline")
     
     # Load raw data
     df_isbns = load_isbn_data_step()
@@ -453,11 +460,17 @@ def book_sales_pipeline_with_modelling_prep(
         split_size=split_size
     )
     
+    # Train ARIMA models with Optuna optimization
+    arima_results = train_arima_optuna_step(
+        modelling_data=modelling_data
+    )
+    
     return {
         "df_merged": df_merged,
         "quality_report": quality_report,
         "processed_data_path": processed_data_path,
         "modelling_data": modelling_data,
+        "arima_results": arima_results,
     }
 
 # ------------------ MAIN ------------------ #
@@ -467,17 +480,17 @@ if __name__ == "__main__":
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(project_root, 'data', 'processed')
 
-    # Define default parameters for modelling preparation
+    # Define default parameters for ARIMA modeling
     default_selected_isbns = [
         '9780722532935',  # The Alchemist
         '9780241003008'   # The Very Hungry Caterpillar
     ]
 
-    # Run the pipeline
-    book_sales_pipeline_with_modelling_prep(
+    # Run the complete ARIMA pipeline
+    book_sales_arima_pipeline(
         output_dir=output_dir,
         selected_isbns=default_selected_isbns,
         column_name='Volume',
         split_size=32
     )
-    print("Pipeline with modelling preparation run submitted! Check the ZenML dashboard for outputs.") 
+    print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.") 

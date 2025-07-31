@@ -42,7 +42,7 @@ class PreprocessingConfig:
         if self.DEFAULT_SELECTED_ISBNS is None:
             self.DEFAULT_SELECTED_ISBNS = [
                 '9780722532935',  # The Alchemist
-                '9780241003008'   # The Very Hungry Caterpillar
+                #'9780241003008'   # The Very Hungry Caterpillar # commented out for speed
             ]
         
         if self.REQUIRED_COLUMNS is None:
