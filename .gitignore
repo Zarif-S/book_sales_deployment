@@ -1,3 +1,7 @@
 .venv/
 *.csv
 *.xlsx
+*.pkl
+
+outputs/
+data/outputs/
