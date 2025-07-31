@@ -21,7 +21,7 @@ from steps._02_preprocessing import preprocess_loaded_data
 from steps._03_5_modelling_prep import prepare_data_after_2012, prepare_multiple_books_data
 
 # Import the separated ARIMA logic
-from scripts._04_arima_logic import (
+from steps._04_arima_logic import (
     create_time_series_from_df,
     split_time_series,
     evaluate_forecast,
@@ -421,7 +421,8 @@ def train_arima_optuna_step(
 ) -> Tuple[
     Annotated[pd.DataFrame, ArtifactConfig(name="arima_results")],
     Annotated[str, ArtifactConfig(name="best_hyperparameters_json")],
-    Annotated[Any, ArtifactConfig(name="trained_model")]
+    Annotated[Any, ArtifactConfig(name="trained_model")],
+    Annotated[pd.DataFrame, ArtifactConfig(name="residuals")]
 ]:
     """
     ARIMA training step with persistent Optuna storage and ZenML caching.
@@ -457,6 +458,16 @@ def train_arima_optuna_step(
         logger.info(f"Evaluation metrics on test set: {eval_metrics}")
         
         final_model = train_final_arima_model(time_series, best_params)
+        
+        # Extract residuals from the final model
+        residuals = final_model.resid
+        residuals_df = pd.DataFrame({
+            'date': residuals.index,
+            'residuals': residuals.values,
+            'model_signature': f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+        })
+        
+        logger.info(f"Extracted residuals with shape: {residuals_df.shape}")
         
         # MLflow logging
         try:
@@ -501,6 +512,17 @@ def train_arima_optuna_step(
         context.add_output_metadata(
             output_name="trained_model",
             metadata={"model_type": "SARIMAX", "best_params": str(best_params)}
+        )
+        
+        # Add residuals metadata
+        context.add_output_metadata(
+            output_name="residuals",
+            metadata={
+                "residuals_count": str(len(residuals)),
+                "residuals_mean": str(float(residuals.mean())),
+                "residuals_std": str(float(residuals.std())),
+                "model_signature": f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+            }
         )
         
         # Create results DataFrame
@@ -588,8 +610,9 @@ def train_arima_optuna_step(
         logger.info(f"Best ARIMA parameters: {best_params}")
         logger.info(f"Test performance - RMSE: {eval_metrics['rmse']:.2f}, MAE: {eval_metrics['mae']:.2f}")
         logger.info(f"Trained on {len(time_series)} periods from {df_work['book_name'].nunique()} books")
+        logger.info(f"Residuals extracted with {len(residuals)} data points")
         
-        return results_df, best_hyperparameters_json, final_model
+        return results_df, best_hyperparameters_json, final_model, residuals_df
         
     except Exception as e:
         logger.error(f"ARIMA training failed: {str(e)}")
@@ -612,7 +635,14 @@ def train_arima_optuna_step(
         
         error_hyperparameters_json = json.dumps(error_hyperparameters_dict, indent=2, default=str)
         
-        return error_df, error_hyperparameters_json, None
+        # Create empty residuals DataFrame for error case
+        error_residuals_df = pd.DataFrame({
+            'date': pd.to_datetime([]),
+            'residuals': [],
+            'model_signature': 'ERROR_MODEL'
+        })
+        
+        return error_df, error_hyperparameters_json, None, error_residuals_df
 
 # Helper steps to parse JSON outputs if needed
 @step
@@ -673,8 +703,8 @@ def book_sales_arima_pipeline(
         split_size=split_size
     )
     
-    # Train ARIMA models with Optuna optimization (handles 3 outputs)
-    arima_results, best_hyperparameters_json, trained_model = train_arima_optuna_step(
+    # Train ARIMA models with Optuna optimization (now handles 4 outputs)
+    arima_results, best_hyperparameters_json, trained_model, residuals = train_arima_optuna_step(
         modelling_data=modelling_data,
         n_trials=n_trials,
         study_name="book_sales_arima_optimization"
@@ -694,6 +724,7 @@ def book_sales_arima_pipeline(
         "best_hyperparameters": best_hyperparameters,  # Parsed dict
         "best_hyperparameters_json": best_hyperparameters_json,  # Original JSON string
         "trained_model": trained_model,  # Model artifact
+        "residuals": residuals,  # Residuals DataFrame artifact
     }
 
 # ------------------ MAIN ------------------ #
