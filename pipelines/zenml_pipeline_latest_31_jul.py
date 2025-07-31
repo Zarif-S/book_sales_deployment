@@ -469,6 +469,12 @@ def train_arima_optuna_step(
         
         logger.info(f"Extracted residuals with shape: {residuals_df.shape}")
         
+        # Save residuals to CSV for LSTM model access
+        import os
+        residuals_csv_path = os.path.join(output_dir, "arima_residuals.csv")
+        residuals_df.to_csv(residuals_csv_path, index=False)
+        logger.info(f"Saved residuals to CSV: {residuals_csv_path}")
+        
         # MLflow logging
         try:
             client = Client()
