@@ -504,4 +504,3 @@ if __name__ == "__main__":
     )
     
     print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")
-    print(f"Pipeline returned {len(results.outputs)} artifacts")

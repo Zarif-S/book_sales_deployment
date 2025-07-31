@@ -8,6 +8,7 @@ from typing import Dict, Any, Tuple, Annotated
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import optuna
+from typing import Any
 import warnings
 warnings.filterwarnings('ignore')
 
@@ -37,22 +38,6 @@ class DictMaterializer(BaseMaterializer):
         import json
         with self.artifact_store.open(self.uri, "w") as f:
             json.dump(data, f, indent=2, default=str)
-
-
-class PickleMaterializer(BaseMaterializer):
-    """Custom materializer for pickle objects (like trained models)."""
-    ASSOCIATED_TYPES = (object,)  # Can handle any picklable object
-
-    def load(self, data_type: type) -> Any:
-        """Load a pickled object from the artifact store."""
-        with self.artifact_store.open(self.uri, "rb") as f:
-            return pickle.load(f)
-
-    def save(self, data: Any) -> None:
-        """Save an object as pickle to the artifact store."""
-        with self.artifact_store.open(self.uri, "wb") as f:
-            pickle.dump(data, f)
-
 
 def create_time_series_from_df(df: pd.DataFrame, target_col: str = "volume",
                                date_col: str = "date") -> pd.Series:
@@ -176,7 +161,7 @@ def train_arima_optuna_step(
 ) -> Tuple[
     Annotated[pd.DataFrame, ArtifactConfig(name="arima_results")],
     Annotated[str, ArtifactConfig(name="best_hyperparameters_json")],
-    Annotated[Any, ArtifactConfig(name="trained_model", materializer=PickleMaterializer)]
+    Annotated[Any, ArtifactConfig(name="trained_model")]
 ]:
     """
     ARIMA training step with persistent Optuna storage and ZenML caching.
