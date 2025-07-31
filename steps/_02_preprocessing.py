@@ -330,14 +330,16 @@ def resample_weekly_data(df: pd.DataFrame) -> pd.DataFrame:
         df: DataFrame with filled missing weeks
         
     Returns:
-        Resampled DataFrame
+        Resampled DataFrame with datetime index preserved
     """
     logger.info("Resampling data to weekly frequency...")
     
-    # Apply resampling to each ISBN group
-    weekly_resampled = df.groupby('ISBN').apply(resample_group_data).reset_index()
+    # Apply resampling to each ISBN group while preserving the datetime index
+    # Don't use reset_index() as it destroys the time series structure
+    weekly_resampled = df.groupby('ISBN').apply(resample_group_data)
     
     logger.info(f"Resampled data shape: {weekly_resampled.shape}")
+    logger.info(f"Resampled data index: {weekly_resampled.index.name}")
     return weekly_resampled
 
 def filter_data_by_date(df: pd.DataFrame, start_date: str, end_date: Optional[str] = None) -> pd.DataFrame:
@@ -816,11 +818,16 @@ def preprocess_loaded_data(df_isbns: pd.DataFrame, df_uk_weekly: pd.DataFrame) -
     # Merge and fill author data
     df_uk_weekly_filled = merge_and_fill_author_data(df_uk_weekly, df_isbns)
 
-    # Ensure 'End Date' is datetime and set as index
-    if 'End Date' in df_uk_weekly_filled.columns:
+    # Ensure 'End Date' is datetime and set as index (only if not already set)
+    if pd.api.types.is_datetime64_any_dtype(df_uk_weekly_filled.index):
+        logger.info("Data already has datetime index, skipping index recreation")
+    elif 'End Date' in df_uk_weekly_filled.columns:
+        logger.info("Setting 'End Date' as datetime index")
         df_uk_weekly_filled = df_uk_weekly_filled.copy()
         df_uk_weekly_filled['End Date'] = pd.to_datetime(df_uk_weekly_filled['End Date'])
         df_uk_weekly_filled = df_uk_weekly_filled.set_index('End Date')
+    else:
+        logger.warning("No 'End Date' column found and no datetime index present")
     
     # Final missing value analysis
     logger.info("Analyzing remaining missing values after filling 'Author':")

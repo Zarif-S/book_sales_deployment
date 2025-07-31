@@ -1,6 +1,7 @@
 import os
 import pandas as pd
-from typing import Tuple, Annotated, Dict, List
+import json
+from typing import Tuple, Annotated, Dict, List, Any
 
 from zenml import step, pipeline
 from zenml.logger import get_logger
@@ -15,7 +16,13 @@ from steps._01_load_data import (
 )
 from steps._02_preprocessing import preprocess_loaded_data
 from steps._03_5_modelling_prep import prepare_data_after_2012, prepare_multiple_books_data
-from steps._04_arima_zenml_mlflow_optuna import train_arima_optuna_step
+
+# FIXED: Import the corrected ARIMA step 
+# Option 1: If you renamed your original file, use this:
+from steps._04_arima_zenml_mlflow_optuna_improved import train_arima_optuna_step
+
+# Option 2: If you created a new file with the fixed code, update the path accordingly:
+# from steps._04_arima_zenml_mlflow_optuna_improved_v2 import train_arima_optuna_step
 
 logger = get_logger(__name__)
 
@@ -41,11 +48,11 @@ def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_d
         
         # Prepare metadata
         metadata_dict = {
-            "total_records": len(df_isbns),
-            "columns": list(df_isbns.columns) if hasattr(df_isbns, 'columns') else [],
+            "total_records": str(len(df_isbns)),
+            "columns": str(list(df_isbns.columns) if hasattr(df_isbns, 'columns') else []),
             "data_shape": f"{df_isbns.shape[0]} rows x {df_isbns.shape[1]} columns",
             "source": "Google Sheets - ISBN data",
-            "missing_values": df_isbns.isna().sum().to_dict()
+            "missing_values": str(df_isbns.isna().sum().to_dict())
         }
         
         logger.info(f"ISBN data metadata: {metadata_dict}")
@@ -79,13 +86,13 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
     try:
         df_uk_weekly = get_uk_weekly_data()
         
-        # Prepare metadata
+        # Prepare metadata (convert all to strings for ZenML compatibility)
         metadata_dict = {
-            "total_records": len(df_uk_weekly),
-            "columns": list(df_uk_weekly.columns) if hasattr(df_uk_weekly, 'columns') else [],
+            "total_records": str(len(df_uk_weekly)),
+            "columns": str(list(df_uk_weekly.columns) if hasattr(df_uk_weekly, 'columns') else []),
             "data_shape": f"{df_uk_weekly.shape[0]} rows x {df_uk_weekly.shape[1]} columns",
             "source": "Google Sheets - UK weekly data",
-            "missing_values": df_uk_weekly.isna().sum().to_dict()
+            "missing_values": str(df_uk_weekly.isna().sum().to_dict())
         }
         
         logger.info(f"UK weekly data metadata: {metadata_dict}")
@@ -108,7 +115,6 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
         raise
 
 @step(
-    # enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -132,8 +138,8 @@ def preprocess_and_merge_step(
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
 )
-def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, ArtifactConfig(name="data_quality_report")]:
-    """Analyze data quality and return quality metrics."""
+def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, ArtifactConfig(name="data_quality_report")]:
+    """Analyze data quality and return quality metrics as JSON string."""
     logger.info("Starting data quality analysis")
     
     try:
@@ -145,7 +151,7 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, Artifa
         # Unique values analysis
         unique_counts = {}
         for col in df_merged.columns:
-            unique_counts[col] = df_merged[col].nunique()
+            unique_counts[col] = int(df_merged[col].nunique())  # Convert to int for JSON serialization
         
         # Data types
         data_types = df_merged.dtypes.astype(str).to_dict()
@@ -173,20 +179,26 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[Dict, Artifa
             "quality_score": round((1 - missing_values.sum() / (total_records * len(df_merged.columns))) * 100, 2)
         }
         
-        logger.info(f"Data quality report: {quality_report}")
+        # FIXED: Convert to JSON string for ZenML compatibility
+        quality_report_json = json.dumps(quality_report, indent=2, default=str)
+        
+        logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
         
         try:
             context = get_step_context()
             context.add_output_metadata(
                 output_name="data_quality_report",
-                metadata=quality_report
+                metadata={
+                    "quality_score": str(quality_report['quality_score']),
+                    "total_records": str(quality_report['total_records']),
+                    "total_columns": str(quality_report['total_columns'])
+                }
             )
             logger.info("Successfully added data quality metadata")
         except Exception as e:
             logger.error(f"Failed to add data quality metadata: {e}")
         
-        logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
-        return quality_report
+        return quality_report_json
         
     except Exception as e:
         logger.error(f"Failed to analyze data quality: {e}")
@@ -215,9 +227,9 @@ def save_processed_data_step(
         
         metadata_dict = {
             "file_path": processed_file_path,
-            "file_size_mb": file_size_mb,
-            "total_records": len(df_merged),
-            "total_columns": len(df_merged.columns),
+            "file_size_mb": str(file_size_mb),
+            "total_records": str(len(df_merged)),
+            "total_columns": str(len(df_merged.columns)),
             "file_format": "CSV",
             "saved_at": pd.Timestamp.now().isoformat()
         }
@@ -254,15 +266,6 @@ def prepare_modelling_data_step(
 ) -> Annotated[pd.DataFrame, ArtifactConfig(name="modelling_data")]:
     """
     Prepare data for ARIMA modeling by splitting into train/test sets for selected books.
-    
-    Args:
-        df_merged: Merged and processed DataFrame
-        selected_isbns: List of ISBNs to prepare data for (defaults to common books)
-        column_name: Column to use for time series analysis (default: 'Volume')
-        split_size: Number of entries to include in test set (default: 32 weeks)
-    
-    Returns:
-        DataFrame containing train/test data for each book
     """
     logger.info("Starting modelling data preparation")
     
@@ -277,29 +280,18 @@ def prepare_modelling_data_step(
         logger.info(f"Preparing modelling data for {len(selected_isbns)} books: {selected_isbns}")
         logger.info(f"Using column: {column_name}, split size: {split_size}")
         
-        # Debug: Check data types and available ISBNs
+        # Debug info
         logger.info(f"ISBN column dtype: {df_merged['ISBN'].dtype}")
-        logger.info(f"Sample ISBNs in data: {df_merged['ISBN'].head().tolist()}")
-        logger.info(f"Total unique ISBNs in data: {df_merged['ISBN'].nunique()}")
-        
-        # Debug: Check Volume column availability
         logger.info(f"Available columns in df_merged: {list(df_merged.columns)}")
-        if 'Volume' in df_merged.columns:
-            logger.info(f"Volume column dtype: {df_merged['Volume'].dtype}")
-            logger.info(f"Volume column sample values: {df_merged['Volume'].head().tolist()}")
-            logger.info(f"Volume column non-null count: {df_merged['Volume'].count()}")
-        else:
+        
+        if 'Volume' not in df_merged.columns:
             logger.error("Volume column not found in df_merged!")
             raise ValueError("Volume column not found in the merged dataframe")
         
-        # Ensure ISBNs are strings throughout the pipeline
-        # This is important for consistency and to avoid type issues downstream
+        # Ensure ISBNs are strings
         if df_merged['ISBN'].dtype != 'object':
             logger.info("Converting ISBN column to string type")
             df_merged['ISBN'] = df_merged['ISBN'].astype(str)
-        
-        # Keep selected ISBNs as strings (they should already be strings)
-        logger.info(f"Using ISBNs as strings: {selected_isbns}")
         
         # Filter data for selected ISBNs
         selected_books_data = df_merged[df_merged['ISBN'].isin(selected_isbns)].copy()
@@ -307,25 +299,15 @@ def prepare_modelling_data_step(
         if selected_books_data.empty:
             raise ValueError(f"No data found for selected ISBNs: {selected_isbns}")
         
-        # Debug: Check Volume column in filtered data
-        logger.info(f"Selected books data shape: {selected_books_data.shape}")
-        if 'Volume' in selected_books_data.columns:
-            logger.info(f"Volume column in selected books data - non-null count: {selected_books_data['Volume'].count()}")
-            logger.info(f"Volume column in selected books data - sample values: {selected_books_data['Volume'].head().tolist()}")
-        else:
-            logger.error("Volume column not found in selected_books_data!")
-            raise ValueError("Volume column not found in the filtered dataframe")
-        
         # Group data by ISBN for individual book analysis
         books_data = {}
-        book_isbn_mapping = {}  # Create mapping from book title to ISBN
+        book_isbn_mapping = {}
         for isbn in selected_isbns:
             book_data = selected_books_data[selected_books_data['ISBN'] == isbn].copy()
             if not book_data.empty:
-                # Get book title for better identification
                 book_title = book_data['Title'].iloc[0] if 'Title' in book_data.columns else f"Book_{isbn}"
                 books_data[book_title] = book_data
-                book_isbn_mapping[book_title] = isbn  # Store the mapping
+                book_isbn_mapping[book_title] = isbn
                 logger.info(f"Found data for {book_title} (ISBN: {isbn}): {len(book_data)} records")
             else:
                 logger.warning(f"No data found for ISBN: {isbn}")
@@ -340,26 +322,24 @@ def prepare_modelling_data_step(
             split_size=split_size
         )
         
-        # Create metadata for the step
+        # Create metadata for the step (convert all to strings)
         metadata_dict = {
-            "selected_isbns": selected_isbns,
+            "selected_isbns": str(selected_isbns),
             "column_name": column_name,
-            "split_size": split_size,
-            "books_processed": list(prepared_data.keys()),
-            "total_books": len(prepared_data),
-            "successful_preparations": sum(1 for train, test in prepared_data.values() if train is not None and test is not None),
+            "split_size": str(split_size),
+            "books_processed": str(list(prepared_data.keys())),
+            "total_books": str(len(prepared_data)),
+            "successful_preparations": str(sum(1 for train, test in prepared_data.values() if train is not None and test is not None)),
             "preparation_timestamp": pd.Timestamp.now().isoformat()
         }
         
         # Add detailed info for each book
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
-                metadata_dict[f"{book_name}_train_shape"] = train_data.shape[0]
-                metadata_dict[f"{book_name}_test_shape"] = test_data.shape[0]
+                metadata_dict[f"{book_name}_train_shape"] = str(train_data.shape[0])
+                metadata_dict[f"{book_name}_test_shape"] = str(test_data.shape[0])
                 metadata_dict[f"{book_name}_train_range"] = f"{train_data.index.min()} to {train_data.index.max()}"
                 metadata_dict[f"{book_name}_test_range"] = f"{test_data.index.min()} to {test_data.index.max()}"
-        
-        logger.info(f"Modelling data preparation metadata: {metadata_dict}")
         
         try:
             context = get_step_context()
@@ -377,7 +357,6 @@ def prepare_modelling_data_step(
         visualization_data = []
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
-                # Get the correct ISBN for this book (already a string)
                 book_isbn = book_isbn_mapping.get(book_name, 'unknown')
                 
                 # Add train data
@@ -385,7 +364,7 @@ def prepare_modelling_data_step(
                     visualization_data.append({
                         'book_name': book_name,
                         'date': date,
-                        column_name.lower(): value,  # Use the actual column name dynamically
+                        'volume': value,  # Use lowercase 'volume' consistently
                         'data_type': 'train',
                         'isbn': book_isbn
                     })
@@ -395,7 +374,7 @@ def prepare_modelling_data_step(
                     visualization_data.append({
                         'book_name': book_name,
                         'date': date,
-                        column_name.lower(): value,  # Use the actual column name dynamically
+                        'volume': value,  # Use lowercase 'volume' consistently
                         'data_type': 'test',
                         'isbn': book_isbn
                     })
@@ -413,6 +392,17 @@ def prepare_modelling_data_step(
         logger.error(f"Failed to prepare modelling data: {e}")
         raise
 
+# FIXED: Add helper step to parse JSON outputs if needed
+@step
+def parse_quality_report_step(quality_report_json: str) -> Dict:
+    """Helper step to parse quality report JSON back to dict if needed by downstream steps."""
+    return json.loads(quality_report_json)
+
+@step
+def parse_hyperparameters_step(hyperparameters_json: str) -> Dict:
+    """Helper step to parse hyperparameters JSON back to dict if needed by downstream steps."""
+    return json.loads(hyperparameters_json)
+
 # ------------------ PIPELINE ------------------ #
 
 @pipeline
@@ -420,10 +410,17 @@ def book_sales_arima_pipeline(
     output_dir: str,
     selected_isbns: List[str] = None,
     column_name: str = 'Volume',
-    split_size: int = 32
+    split_size: int = 32,
+    n_trials: int = 3
 ) -> Dict:
     """
     Complete book sales data processing and ARIMA modeling pipeline.
+    
+    FIXED CHANGES:
+    1. Updated to handle 3 outputs from ARIMA step (results, hyperparameters_json, model)
+    2. Added JSON parsing for data quality report
+    3. Fixed metadata handling to use strings for ZenML compatibility
+    4. Added n_trials parameter for Optuna optimization
     
     This pipeline:
     1. Loads ISBN and UK weekly sales data
@@ -443,8 +440,8 @@ def book_sales_arima_pipeline(
     # Preprocess and merge
     df_merged = preprocess_and_merge_step(df_isbns=df_isbns, df_uk_weekly=df_uk_weekly)
     
-    # Analyze data quality
-    quality_report = analyze_data_quality_step(df_merged=df_merged)
+    # Analyze data quality (now returns JSON string)
+    quality_report_json = analyze_data_quality_step(df_merged=df_merged)
     
     # Save processed data
     processed_data_path = save_processed_data_step(
@@ -460,17 +457,28 @@ def book_sales_arima_pipeline(
         split_size=split_size
     )
     
-    # Train ARIMA models with Optuna optimization
-    arima_results = train_arima_optuna_step(
-        modelling_data=modelling_data
+    # FIXED: Train ARIMA models with Optuna optimization (now handles 3 outputs)
+    arima_results, best_hyperparameters_json, trained_model = train_arima_optuna_step(
+        modelling_data=modelling_data,
+        n_trials=n_trials,
+        study_name="book_sales_arima_optimization"
     )
+    
+    # Optional: Parse JSON outputs back to dicts for pipeline return
+    # (You can comment these out if you don't need them)
+    quality_report = parse_quality_report_step(quality_report_json)
+    best_hyperparameters = parse_hyperparameters_step(best_hyperparameters_json)
     
     return {
         "df_merged": df_merged,
-        "quality_report": quality_report,
+        "quality_report": quality_report,  # Parsed dict
+        "quality_report_json": quality_report_json,  # Original JSON string
         "processed_data_path": processed_data_path,
         "modelling_data": modelling_data,
         "arima_results": arima_results,
+        "best_hyperparameters": best_hyperparameters,  # Parsed dict
+        "best_hyperparameters_json": best_hyperparameters_json,  # Original JSON string
+        "trained_model": trained_model,  # New model artifact
     }
 
 # ------------------ MAIN ------------------ #
@@ -486,11 +494,14 @@ if __name__ == "__main__":
         '9780241003008'   # The Very Hungry Caterpillar
     ]
 
-    # Run the complete ARIMA pipeline
-    book_sales_arima_pipeline(
+    # FIXED: Run the complete ARIMA pipeline with proper parameters
+    results = book_sales_arima_pipeline(
         output_dir=output_dir,
         selected_isbns=default_selected_isbns,
         column_name='Volume',
-        split_size=32
+        split_size=32,
+        n_trials=3  # Start with small number for testing
     )
-    print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.") 
+    
+    print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")
+    print(f"Pipeline returned {len(results.outputs)} artifacts")

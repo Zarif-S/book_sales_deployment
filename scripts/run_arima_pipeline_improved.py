@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 """
-Script to run the complete ARIMA pipeline for book sales data.
+Script to run the IMPROVED complete ARIMA pipeline for book sales data.
+
+IMPROVEMENTS:
+- Uses persistent Optuna storage for hyperparameter optimization
+- Enables ZenML caching for faster repeated runs
+- Returns structured outputs including hyperparameters
+- Handles all metadata properly to avoid unhashable type errors
 
 This script runs the full pipeline including:
 - Data loading and preprocessing
 - Data quality analysis
-- ARIMA modeling with Optuna optimization
+- ARIMA modeling with persistent Optuna optimization
+- Structured output handling
 """
 
 import os
@@ -17,7 +24,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from pipelines.zenml_pipeline_with_arima import book_sales_arima_pipeline
+from pipelines.zenml_pipeline_with_arima_improved import book_sales_arima_pipeline_improved
 
 # Set up logging
 logging.basicConfig(
@@ -27,9 +34,9 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 def main():
-    """Run the complete ARIMA pipeline."""
+    """Run the improved complete ARIMA pipeline."""
     try:
-        logger.info("Starting ARIMA pipeline execution")
+        logger.info("Starting IMPROVED ARIMA pipeline execution")
         
         # Set up output directory
         output_dir = os.path.join(project_root, 'data', 'processed')
@@ -43,22 +50,26 @@ def main():
         
         logger.info(f"Using ISBNs: {selected_isbns}")
         logger.info(f"Output directory: {output_dir}")
+        logger.info("IMPROVEMENTS: Persistent Optuna storage, ZenML caching, structured outputs")
         
-        # Run the pipeline
-        results = book_sales_arima_pipeline(
+        # Run the improved pipeline
+        results = book_sales_arima_pipeline_improved(
             output_dir=output_dir,
             selected_isbns=selected_isbns,
             column_name='Volume',
-            split_size=32
+            split_size=32,
+            n_trials=30  # Configurable optimization trials
         )
         
-        logger.info("ARIMA pipeline completed successfully!")
+        logger.info("IMPROVED ARIMA pipeline completed successfully!")
         logger.info("Pipeline run completed. Check the ZenML dashboard for detailed results.")
         
         # Note: ZenML pipelines return PipelineRunResponse objects, not dictionaries
         # The actual results are available through the ZenML dashboard and artifact store
         logger.info("Pipeline results are available in the ZenML dashboard and artifact store.")
         logger.info("You can access individual step outputs through the ZenML client.")
+        logger.info("IMPROVEMENTS: Persistent Optuna storage will resume optimization in future runs.")
+        logger.info("IMPROVEMENTS: ZenML caching will skip steps when inputs haven't changed.")
         
         logger.info("Pipeline execution completed successfully!")
         return results
@@ -71,4 +82,4 @@ def main():
         raise
 
 if __name__ == "__main__":
-    main() 
+    main()
