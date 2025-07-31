@@ -14,14 +14,23 @@ For visualization and plotting, use the separate _04_arima_plots.py module.
 
 import numpy as np
 import pandas as pd
-
+import pickle
 from statsmodels.tsa.arima.model import ARIMA
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from pmdarima import auto_arima
 from statsmodels.stats.diagnostic import acorr_ljungbox
+from statsmodels.tsa.stattools import adfuller
+from statsmodels.stats.stattools import jarque_bera
+from statsmodels.tsa.stattools import acf, pacf
+from scipy import stats
+from scipy.stats import t
+from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 from typing import Dict, List, Tuple, Optional, Union
 import warnings
 warnings.filterwarnings('ignore')
+
+# Global list to store model results
+model_results_list = []
 
 def prepare_data_for_arima(data: pd.DataFrame, isbn: Union[str, int], 
                           forecast_horizon: int = 32) -> Tuple[pd.Series, pd.Series]:
@@ -66,32 +75,61 @@ def prepare_data_for_arima(data: pd.DataFrame, isbn: Union[str, int],
     
     return train_data, test_data
 
+def prepare_data_after_2012(book_data: pd.DataFrame, column_name: str, split_size: int = 32) -> Tuple[pd.Series, pd.Series]:
+    """
+    Prepare training and testing data after 2012-01-01 based on a given split size.
+
+    Args:
+        book_data: DataFrame containing the book data with a time series index
+        column_name: Column to split into train and test data
+        split_size: Number of entries (weeks or months) to include in the test set
+
+    Returns:
+        Tuple of (training_data, test_data)
+    """
+    # Filter data for dates after 2012-01-01 inclusive
+    data_after_2012 = book_data[book_data.index >= '2012-01-01']
+
+    # Ensure there is enough data for splitting
+    if len(data_after_2012) < split_size:
+        raise ValueError(f"Not enough data available for the test set (at least {split_size} entries required).")
+
+    # Split into train and test data
+    train_data = data_after_2012[column_name].iloc[:-split_size]  # All data except the last split_size entries
+    test_data = data_after_2012[column_name].iloc[-split_size:]   # Last split_size entries of data
+
+    return train_data, test_data
+
 def run_auto_arima(train_data: pd.Series, 
-                   seasonal: bool = False,
+                   seasonal: bool = True,
                    m: int = 52,
-                   max_p: int = 5,
-                   max_d: int = 2,
-                   max_q: int = 5,
+                   max_p: int = 2,  # Reduced from 5 to prevent crashes
+                   max_d: int = 0,  # Reduced from 2 to prevent crashes
+                   max_q: int = 2,  # Reduced from 5 to prevent crashes
                    max_P: int = 2,
-                   max_D: int = 1,
-                   max_Q: int = 2,
+                   max_D: int = 0,  # Reduced from 1 to prevent crashes
+                   max_Q: int = 2,  # Reduced from 5 to prevent crashes
                    stepwise: bool = True,
                    suppress_warnings: bool = True,
                    error_action: str = 'ignore',
-                   trace: bool = False) -> Dict:
+                   trace: bool = False,
+                   information_criterion: str = 'aic',
+                   out_of_sample_size: int = 0) -> Dict:
     """
-    Run Auto ARIMA to find the best model parameters.
+    Run Auto ARIMA to find the best model parameters with optimized settings.
     
     Args:
         train_data: Training time series data
         seasonal: Whether to use seasonal ARIMA (SARIMA)
         m: Seasonal period (52 for weekly data)
-        max_p, max_d, max_q: Maximum orders for non-seasonal components
-        max_P, max_D, max_Q: Maximum orders for seasonal components
+        max_p, max_d, max_q: Maximum orders for non-seasonal components (reduced to prevent crashes)
+        max_P, max_D, max_Q: Maximum orders for seasonal components (reduced to prevent crashes)
         stepwise: Whether to use stepwise search
         suppress_warnings: Whether to suppress warnings
         error_action: How to handle errors
         trace: Whether to print trace information
+        information_criterion: 'aic' or 'bic' for model selection
+        out_of_sample_size: Number of observations to reserve for validation
         
     Returns:
         Dictionary with Auto ARIMA results
@@ -102,6 +140,8 @@ def run_auto_arima(train_data: pd.Series,
     print(f"  Max orders - p:{max_p}, d:{max_d}, q:{max_q}")
     if seasonal:
         print(f"  Max seasonal orders - P:{max_P}, D:{max_D}, Q:{max_Q}")
+    print(f"  Information criterion: {information_criterion}")
+    print(f"  Out-of-sample size: {out_of_sample_size}")
     
     try:
         if seasonal:
@@ -119,7 +159,15 @@ def run_auto_arima(train_data: pd.Series,
                 suppress_warnings=suppress_warnings,
                 error_action=error_action,
                 trace=trace,
-                random_state=42
+                random_state=42,
+                information_criterion=information_criterion,
+                out_of_sample_size=out_of_sample_size,
+                scoring='mse',
+                stationary=True,  # Set to True as data is likely stationary
+                test='kpss',  # KPSS test for stationarity
+                seasonal_test='ocsb',  # OCSB test for seasonality
+                maxiter=30,  # Limit iterations to prevent long runs
+                n_jobs=1  # Single job to prevent memory issues
             )
         else:
             auto_model = auto_arima(
@@ -132,7 +180,14 @@ def run_auto_arima(train_data: pd.Series,
                 suppress_warnings=suppress_warnings,
                 error_action=error_action,
                 trace=trace,
-                random_state=42
+                random_state=42,
+                information_criterion=information_criterion,
+                out_of_sample_size=out_of_sample_size,
+                scoring='mse',
+                stationary=True,
+                test='kpss',
+                maxiter=30,
+                n_jobs=1
             )
         
         # Extract model information
@@ -205,7 +260,7 @@ def fit_arima_model(train_data: pd.Series, order: Tuple[int, int, int],
 
 def analyze_residuals(fitted_model, title: str = "Model Residuals") -> Dict:
     """
-    Analyze model residuals for diagnostic purposes.
+    Analyze model residuals for diagnostic purposes with comprehensive tests.
     
     Args:
         fitted_model: Fitted ARIMA/SARIMA model
@@ -224,22 +279,48 @@ def analyze_residuals(fitted_model, title: str = "Model Residuals") -> Dict:
         'mean': residuals.mean(),
         'std': residuals.std(),
         'skewness': residuals.skew(),
-        'kurtosis': residuals.kurtosis(),
-        'jarque_bera_stat': fitted_model.test_normality()[0],
-        'jarque_bera_pvalue': fitted_model.test_normality()[1]
+        'kurtosis': residuals.kurtosis()
     }
+    
+    # Test normality (with proper method parameter)
+    try:
+        normality_test = fitted_model.test_normality(method='jarquebera')
+        residual_stats['jarque_bera_stat'] = normality_test[0]
+        residual_stats['jarque_bera_pvalue'] = normality_test[1]
+    except Exception as e:
+        print(f"Warning: Normality test failed: {e}")
+        residual_stats['jarque_bera_stat'] = None
+        residual_stats['jarque_bera_pvalue'] = None
+    
+    # Additional normality test using scipy
+    jb_test = jarque_bera(residuals.dropna())
+    residual_stats['jarque_bera_scipy_stat'] = jb_test[0]
+    residual_stats['jarque_bera_scipy_pvalue'] = jb_test[1]
     
     print(f"Residual Statistics:")
     print(f"  Mean: {residual_stats['mean']:.4f}")
     print(f"  Std: {residual_stats['std']:.4f}")
     print(f"  Skewness: {residual_stats['skewness']:.4f}")
     print(f"  Kurtosis: {residual_stats['kurtosis']:.4f}")
-    print(f"  Jarque-Bera p-value: {residual_stats['jarque_bera_pvalue']:.4f}")
+    if residual_stats['jarque_bera_pvalue'] is not None:
+        print(f"  Jarque-Bera p-value (statsmodels): {residual_stats['jarque_bera_pvalue']:.4f}")
+    print(f"  Jarque-Bera p-value (scipy): {residual_stats['jarque_bera_scipy_pvalue']:.4f}")
     
     # Ljung-Box test for autocorrelation
     lb_test = acorr_ljungbox(residuals.dropna(), lags=10, return_df=True)
     print(f"\nLjung-Box test for residual autocorrelation:")
     print(f"  p-value: {lb_test['lb_pvalue'].iloc[-1]:.4f}")
+    
+    # Fit Student-t distribution if residuals are non-normal
+    if residual_stats['jarque_bera_scipy_pvalue'] < 0.05:
+        try:
+            df, loc, scale = t.fit(residuals.dropna())
+            residual_stats['student_t_df'] = df
+            residual_stats['student_t_loc'] = loc
+            residual_stats['student_t_scale'] = scale
+            print(f"  Fitted Student-t parameters: df={df:.2f}, loc={loc:.2f}, scale={scale:.2f}")
+        except Exception as e:
+            print(f"  Student-t fitting failed: {e}")
     
     return {
         'residuals': residuals,
@@ -265,9 +346,28 @@ def forecast_with_arima(fitted_model, steps: int, alpha: float = 0.05) -> Dict:
         # Generate forecast
         forecast_result = fitted_model.forecast(steps=steps, alpha=alpha)
         
-        # Extract forecast values and confidence intervals
-        forecast_values = forecast_result.predicted_mean
-        conf_int = forecast_result.conf_int()
+        # Handle different forecast result structures
+        if hasattr(forecast_result, 'predicted_mean'):
+            # Standard statsmodels forecast result
+            forecast_values = forecast_result.predicted_mean
+            conf_int = forecast_result.conf_int()
+        elif isinstance(forecast_result, pd.Series):
+            # Direct series result
+            forecast_values = forecast_result
+            # Try to get confidence intervals if available
+            try:
+                conf_int = fitted_model.get_forecast(steps=steps, alpha=alpha).conf_int()
+            except:
+                # Create simple confidence intervals based on model residuals
+                residuals_std = fitted_model.resid.std()
+                conf_int = pd.DataFrame({
+                    'lower': forecast_values - 1.96 * residuals_std,
+                    'upper': forecast_values + 1.96 * residuals_std
+                })
+        else:
+            # Fallback: try to extract values directly
+            forecast_values = forecast_result
+            conf_int = None
         
         print(f"Forecast completed successfully")
         print(f"Forecast range: {forecast_values.min():.2f} to {forecast_values.max():.2f}")
@@ -282,8 +382,6 @@ def forecast_with_arima(fitted_model, steps: int, alpha: float = 0.05) -> Dict:
     except Exception as e:
         print(f"Forecasting failed: {e}")
         return None
-
-
 
 def evaluate_forecast_accuracy(actual: pd.Series, forecast: pd.Series) -> Dict:
     """
@@ -338,10 +436,99 @@ def evaluate_forecast_accuracy(actual: pd.Series, forecast: pd.Series) -> Dict:
     
     return metrics
 
+def arima_predictions(df: pd.DataFrame, column: str, forecast_steps: int) -> Tuple[pd.DataFrame, object, pd.Series]:
+    """
+    Alternative ARIMA implementation with automatic parameter selection.
+    
+    Args:
+        df: DataFrame containing the time series data
+        column: Column name to model
+        forecast_steps: Number of steps to forecast
+        
+    Returns:
+        Tuple of (forecast_summary, model_summary, predictions)
+    """
+    # MA Lags
+    acf_coef = acf(df[column], alpha=0.05)
+    sig_acf = []
+    for i in range(1, len(acf_coef[0])):
+        if acf_coef[0][i] > (acf_coef[1][i][1] - acf_coef[0][i]):
+            sig_acf.append(i)
+        elif acf_coef[0][i] < (acf_coef[1][i][0] - acf_coef[0][i]):
+            sig_acf.append(i)
+
+    # AR Lags
+    pacf_coef = pacf(df[column], alpha=0.05)
+    sig_pacf = []
+    for i in range(1, len(pacf_coef[0])):
+        if pacf_coef[0][i] > (pacf_coef[1][i][1] - pacf_coef[0][i]):
+            sig_pacf.append(i)
+        elif pacf_coef[0][i] < (pacf_coef[1][i][0] - pacf_coef[0][i]):
+            sig_pacf.append(i)
+
+    # Order of integration (difference)
+    adf = adfuller(x=df[column], autolag='BIC')
+    order = 0
+
+    if adf[0] < adf[4]['5%']:
+        order = 0  # d
+    else:
+        order = 1  # d
+
+    # Trend indication
+    if order == 1:
+        trend = 't'
+    else:
+        trend = 'c'
+
+    # ARIMA(p,d,q) Model
+    model = ARIMA(endog=df[column],
+                  order=(sig_pacf, order, sig_acf),
+                  trend=trend).fit()
+
+    forecast = model.get_forecast(forecast_steps)
+    predict = model.predict()
+
+    return forecast.summary_frame(), model.summary(), predict
+
+def save_and_download(data, file_path: str, save_format: str = 'pickle'):
+    """
+    Save and download data (models, forecasts, etc.).
+    Supports 'pickle' or 'csv' formats.
+    """
+    if save_format == 'pickle':
+        with open(file_path, 'wb') as f:
+            pickle.dump(data, f)
+    elif save_format == 'csv':
+        data.to_csv(file_path, index=False)
+
+    print(f"Data saved to {file_path}")
+
+def log_model_results(model_number: int, model_name: str, model_results: Dict, 
+                     mae: float, mape: float, book: str, dataset: str):
+    """
+    Log model results into a dictionary and store them in a list.
+    """
+    # Ensure necessary metrics are provided
+    if mae is None or mape is None:
+        raise ValueError(f"Missing MAE or MAPE for model {model_name}")
+
+    # Create a dictionary to store the model information
+    model_info = {
+        'Model Number': model_number,
+        'Book': book,
+        'Dataset': dataset,
+        'Model Name': model_name,
+        'Model Config': model_results,
+        'MAE': mae,
+        'MAPE': mape
+    }
+    model_results_list.append(model_info)
+
 def run_complete_arima_analysis(data: pd.DataFrame, isbn: Union[str, int], 
                                forecast_horizon: int = 32,
                                use_auto_arima: bool = True,
-                               seasonal: bool = False,
+                               seasonal: bool = True,
                                title: Optional[str] = None) -> Dict:
     """
     Run complete ARIMA analysis for a single book.
@@ -529,4 +716,4 @@ if __name__ == "__main__":
     print("  model = fit_arima_model(train_data, (1, 0, 1))")
     print("\nFor visualization and plotting:")
     print("  from steps._04_arima_plots import *")
-    print("  plot_forecast_results(train_data, test_data, forecast_result, 'Book Title')") 
+    print("  plot_forecast_results(train_data, test_data, forecast_result, 'Book Title')")
