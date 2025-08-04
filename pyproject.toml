@@ -6,7 +6,7 @@ authors = ["Zarif Shafiei <zarif@example.com>"]
 packages = [
     { include = "pipelines" },
     { include = "steps" },
-    { include = "utils" }
+    { include = "utils" },
 ]
 
 [tool.poetry.dependencies]
@@ -62,3 +62,5 @@ pytest-cov = "^4.1.0"
 [build-system]
 requires = ["poetry-core>=1.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+# need to add kaleido sometime

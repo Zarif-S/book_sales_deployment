@@ -1,5 +1,6 @@
 import os
 import pandas as pd
+import numpy as np
 import json
 from typing import Tuple, Annotated, Dict, List, Any
 
@@ -75,9 +76,9 @@ def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_d
             "source": "Google Sheets - ISBN data",
             "missing_values": str(df_isbns.isna().sum().to_dict())
         }
-        
+
         logger.info(f"ISBN data metadata: {metadata_dict}")
-        
+
         try:
             context = get_step_context()
             context.add_output_metadata(
@@ -87,10 +88,10 @@ def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_d
             logger.info("Successfully added ISBN data metadata")
         except Exception as e:
             logger.error(f"Failed to add ISBN data metadata: {e}")
-        
+
         logger.info(f"Loaded {len(df_isbns)} ISBN records")
         return df_isbns
-        
+
     except Exception as e:
         logger.error(f"Failed to load ISBN data: {e}")
         raise
@@ -113,9 +114,9 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
             "source": "Google Sheets - UK weekly data",
             "missing_values": str(df_uk_weekly.isna().sum().to_dict())
         }
-        
+
         logger.info(f"UK weekly data metadata: {metadata_dict}")
-        
+
         try:
             context = get_step_context()
             context.add_output_metadata(
@@ -125,10 +126,10 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
             logger.info("Successfully added UK weekly data metadata")
         except Exception as e:
             logger.error(f"Failed to add UK weekly data metadata: {e}")
-        
+
         logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records")
         return df_uk_weekly
-        
+
     except Exception as e:
         logger.error(f"Failed to load UK weekly data: {e}")
         raise
@@ -165,15 +166,15 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, Artifac
         total_records = len(df_merged)
         missing_values = df_merged.isna().sum()
         missing_percentage = (missing_values / total_records * 100).round(2)
-        
+
         # Unique values analysis
         unique_counts = {}
         for col in df_merged.columns:
             unique_counts[col] = int(df_merged[col].nunique())  # Convert to int for JSON serialization
-        
+
         # Data types
         data_types = df_merged.dtypes.astype(str).to_dict()
-        
+
         # Basic statistics for numeric columns
         numeric_stats = {}
         numeric_cols = df_merged.select_dtypes(include=['number']).columns
@@ -185,7 +186,7 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, Artifac
                 'max': float(df_merged[col].max()),
                 'median': float(df_merged[col].median())
             }
-        
+
         quality_report = {
             "total_records": total_records,
             "total_columns": len(df_merged.columns),
@@ -196,12 +197,12 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, Artifac
             "numeric_statistics": numeric_stats,
             "quality_score": round((1 - missing_values.sum() / (total_records * len(df_merged.columns))) * 100, 2)
         }
-        
+
         # Convert to JSON string for ZenML compatibility
         quality_report_json = json.dumps(quality_report, indent=2, default=str)
-        
+
         logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
-        
+
         try:
             context = get_step_context()
             context.add_output_metadata(
@@ -215,9 +216,9 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, Artifac
             logger.info("Successfully added data quality metadata")
         except Exception as e:
             logger.error(f"Failed to add data quality metadata: {e}")
-        
+
         return quality_report_json
-        
+
     except Exception as e:
         logger.error(f"Failed to analyze data quality: {e}")
         raise
@@ -234,14 +235,14 @@ def save_processed_data_step(
     logger.info("Starting data saving")
     try:
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Save processed data
         processed_file_path = os.path.join(output_dir, 'book_sales_processed.csv')
         df_merged.to_csv(processed_file_path, index=False)
-        
+
         # Calculate file size
         file_size_mb = round(os.path.getsize(processed_file_path) / (1024*1024), 2)
-        
+
         metadata_dict = {
             "file_path": processed_file_path,
             "file_size_mb": str(file_size_mb),
@@ -250,9 +251,9 @@ def save_processed_data_step(
             "file_format": "CSV",
             "saved_at": pd.Timestamp.now().isoformat()
         }
-        
+
         logger.info(f"Data saving metadata: {metadata_dict}")
-        
+
         try:
             context = get_step_context()
             context.add_output_metadata(
@@ -262,10 +263,10 @@ def save_processed_data_step(
             logger.info("Successfully added data saving metadata")
         except Exception as e:
             logger.error(f"Failed to add data saving metadata: {e}")
-        
+
         logger.info(f"Processed data saved to {processed_file_path}")
         return processed_file_path
-        
+
     except Exception as e:
         logger.error(f"Failed to save processed data: {e}")
         raise
@@ -292,33 +293,33 @@ def prepare_modelling_data_step(
                 '9780722532935',  # The Alchemist
                 '9780241003008'   # The Very Hungry Caterpillar
             ]
-        
+
         logger.info(f"Preparing modelling data for {len(selected_isbns)} books: {selected_isbns}")
         logger.info(f"Using column: {column_name}, split size: {split_size}")
-        
+
         # Debug info
         logger.info(f"ISBN column dtype: {df_merged['ISBN'].dtype}")
         logger.info(f"Available columns in df_merged: {list(df_merged.columns)}")
-        
+
         if 'Volume' not in df_merged.columns:
             logger.error("Volume column not found in df_merged!")
             raise ValueError("Volume column not found in the merged dataframe")
-        
+
         # Ensure ISBNs are strings
         if df_merged['ISBN'].dtype != 'object':
             logger.info("Converting ISBN column to string type")
             df_merged['ISBN'] = df_merged['ISBN'].astype(str)
-        
+
         # Filter data for selected ISBNs
         selected_books_data = df_merged[df_merged['ISBN'].isin(selected_isbns)].copy()
-        
+
         if selected_books_data.empty:
             raise ValueError(f"No data found for selected ISBNs: {selected_isbns}")
-        
+
         # Group data by ISBN for individual book analysis
         books_data = {}
         book_isbn_mapping = {}
-        
+
         for isbn in selected_isbns:
             book_data = selected_books_data[selected_books_data['ISBN'] == isbn].copy()
             if not book_data.empty:
@@ -328,17 +329,17 @@ def prepare_modelling_data_step(
                 logger.info(f"Found data for {book_title} (ISBN: {isbn}): {len(book_data)} records")
             else:
                 logger.warning(f"No data found for ISBN: {isbn}")
-        
+
         if not books_data:
             raise ValueError("No valid book data found for any of the selected ISBNs")
-        
+
         # Prepare train/test data for each book
         prepared_data = prepare_multiple_books_data(
             books_data=books_data,
             column_name=column_name,
             split_size=split_size
         )
-        
+
         # Create metadata for the step (convert all to strings)
         metadata_dict = {
             "selected_isbns": str(selected_isbns),
@@ -349,7 +350,7 @@ def prepare_modelling_data_step(
             "successful_preparations": str(sum(1 for train, test in prepared_data.values() if train is not None and test is not None)),
             "preparation_timestamp": pd.Timestamp.now().isoformat()
         }
-        
+
         # Add detailed info for each book
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
@@ -357,7 +358,7 @@ def prepare_modelling_data_step(
                 metadata_dict[f"{book_name}_test_shape"] = str(test_data.shape[0])
                 metadata_dict[f"{book_name}_train_range"] = f"{train_data.index.min()} to {train_data.index.max()}"
                 metadata_dict[f"{book_name}_test_range"] = f"{test_data.index.min()} to {test_data.index.max()}"
-        
+
         try:
             context = get_step_context()
             context.add_output_metadata(
@@ -367,15 +368,15 @@ def prepare_modelling_data_step(
             logger.info("Successfully added modelling data metadata")
         except Exception as e:
             logger.error(f"Failed to add modelling data metadata: {e}")
-        
+
         logger.info(f"Successfully prepared modelling data for {len(prepared_data)} books")
-        
+
         # Create a DataFrame for visualization that contains the train/test data
         visualization_data = []
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
                 book_isbn = book_isbn_mapping.get(book_name, 'unknown')
-                
+
                 # Add train data
                 for date, value in train_data.items():
                     visualization_data.append({
@@ -385,7 +386,7 @@ def prepare_modelling_data_step(
                         'data_type': 'train',
                         'isbn': book_isbn
                     })
-                
+
                 # Add test data
                 for date, value in test_data.items():
                     visualization_data.append({
@@ -395,16 +396,16 @@ def prepare_modelling_data_step(
                         'data_type': 'test',
                         'isbn': book_isbn
                     })
-        
+
         # Create DataFrame for visualization
         viz_df = pd.DataFrame(visualization_data)
         if not viz_df.empty:
             viz_df['date'] = pd.to_datetime(viz_df['date'])
             viz_df = viz_df.sort_values(['book_name', 'date'])
             logger.info(f"Created visualization DataFrame with {len(viz_df)} rows")
-        
+
         return viz_df
-        
+
     except Exception as e:
         logger.error(f"Failed to prepare modelling data: {e}")
         raise
@@ -416,13 +417,16 @@ def prepare_modelling_data_step(
 )
 def train_arima_optuna_step(
     modelling_data: pd.DataFrame,
+    output_dir: str,
     n_trials: int = 3,
     study_name: str = "arima_optimization"
 ) -> Tuple[
     Annotated[pd.DataFrame, ArtifactConfig(name="arima_results")],
     Annotated[str, ArtifactConfig(name="best_hyperparameters_json")],
     Annotated[Any, ArtifactConfig(name="trained_model")],
-    Annotated[pd.DataFrame, ArtifactConfig(name="residuals")]
+    Annotated[pd.DataFrame, ArtifactConfig(name="residuals")],
+    Annotated[pd.DataFrame, ArtifactConfig(name="test_predictions")],
+    Annotated[pd.DataFrame, ArtifactConfig(name="forecast_comparison")]
 ]:
     """
     ARIMA training step with persistent Optuna storage and ZenML caching.
@@ -430,35 +434,60 @@ def train_arima_optuna_step(
     logger.info("Starting ARIMA + Optuna training step")
     logger.info(f"Input data shape: {modelling_data.shape}")
     logger.info(f"Optuna study name: {study_name}, n_trials: {n_trials}")
-    
+
     required_cols = ['book_name', 'date', 'volume', 'data_type', 'isbn']
     missing_cols = [col for col in required_cols if col not in modelling_data.columns]
     if missing_cols:
         raise ValueError(f"Missing required columns: {missing_cols}")
-    
+
     df_work = modelling_data.copy()
     df_work['isbn'] = df_work['isbn'].astype(str)
-    
+
     try:
         time_series = create_time_series_from_df(df_work, target_col="volume", date_col="date")
         train_series, test_series = split_time_series(time_series, test_size=32)
-        
+
         optimization_results = run_optuna_optimization(
             train_series,
             test_series,
             n_trials=n_trials,
             study_name=study_name
         )
-        
+
         best_params = optimization_results["best_params"]
         eval_model = train_final_arima_model(train_series, best_params)
         eval_forecast = eval_model.forecast(steps=len(test_series))
         eval_metrics = evaluate_forecast(test_series.values, eval_forecast.values)
-        
+
         logger.info(f"Evaluation metrics on test set: {eval_metrics}")
-        
+
+        # Create test predictions DataFrame
+        test_predictions_df = pd.DataFrame({
+            'date': test_series.index,
+            'actual': test_series.values,
+            'predicted': eval_forecast.values,
+            'residuals': test_series.values - eval_forecast.values,
+            'absolute_error': np.abs(test_series.values - eval_forecast.values),
+            'model_signature': f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+        })
+
+        # Create forecast comparison DataFrame
+        forecast_comparison_df = pd.DataFrame({
+            'period': range(1, len(test_series) + 1),
+            'date': test_series.index,
+            'actual_volume': test_series.values,
+            'predicted_volume': eval_forecast.values,
+            'absolute_error': np.abs(test_series.values - eval_forecast.values),
+            'percentage_error': np.abs((test_series.values - eval_forecast.values) / test_series.values) * 100,
+            'squared_error': (test_series.values - eval_forecast.values) ** 2,
+            'model_signature': f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+        })
+
+        logger.info(f"Created test predictions DataFrame with {len(test_predictions_df)} rows")
+        logger.info(f"Created forecast comparison DataFrame with {len(forecast_comparison_df)} rows")
+
         final_model = train_final_arima_model(time_series, best_params)
-        
+
         # Extract residuals from the final model
         residuals = final_model.resid
         residuals_df = pd.DataFrame({
@@ -466,15 +495,15 @@ def train_arima_optuna_step(
             'residuals': residuals.values,
             'model_signature': f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
         })
-        
+
         logger.info(f"Extracted residuals with shape: {residuals_df.shape}")
-        
+
         # Save residuals to CSV for LSTM model access
         import os
         residuals_csv_path = os.path.join(output_dir, "arima_residuals.csv")
         residuals_df.to_csv(residuals_csv_path, index=False)
         logger.info(f"Saved residuals to CSV: {residuals_csv_path}")
-        
+
         # MLflow logging
         try:
             client = Client()
@@ -490,7 +519,7 @@ def train_arima_optuna_step(
                     mlflow.log_metric("best_rmse", optimization_results["best_value"])
         except Exception as e:
             logger.warning(f"MLflow logging failed: {e}")
-        
+
         # Add metadata
         context = get_step_context()
         metadata_to_log = {
@@ -502,24 +531,24 @@ def train_arima_optuna_step(
             "optuna_trials": str(optimization_results["n_trials"]),
             "best_rmse": str(optimization_results["best_value"])
         }
-        
+
         # Add each piece of metadata individually for safety
         context.add_output_metadata(
             output_name="arima_results",
             metadata=metadata_to_log
         )
-        
+
         context.add_output_metadata(
             output_name="best_hyperparameters_json",
             metadata=metadata_to_log
         )
-        
+
         # Correct way to log individual metadata items
         context.add_output_metadata(
             output_name="trained_model",
             metadata={"model_type": "SARIMAX", "best_params": str(best_params)}
         )
-        
+
         # Add residuals metadata
         context.add_output_metadata(
             output_name="residuals",
@@ -530,10 +559,33 @@ def train_arima_optuna_step(
                 "model_signature": f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
             }
         )
-        
+
+        context.add_output_metadata(
+            output_name="test_predictions",
+            metadata={
+                "predictions_count": str(len(test_predictions_df)),
+                "mean_absolute_error": str(float(test_predictions_df['absolute_error'].mean())),
+                "rmse": str(eval_metrics['rmse']),
+                "test_period_start": str(test_predictions_df['date'].min()),
+                "test_period_end": str(test_predictions_df['date'].max()),
+                "model_signature": f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+            }
+        )
+
+        context.add_output_metadata(
+            output_name="forecast_comparison",
+            metadata={
+                "comparison_periods": str(len(forecast_comparison_df)),
+                "mean_percentage_error": str(float(forecast_comparison_df['percentage_error'].mean())),
+                "max_absolute_error": str(float(forecast_comparison_df['absolute_error'].max())),
+                "min_absolute_error": str(float(forecast_comparison_df['absolute_error'].min())),
+                "model_signature": f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
+            }
+        )
+
         # Create results DataFrame
         results_data = []
-        
+
         results_data.append({
             'result_type': 'model_config',
             'component': 'hyperparameters',
@@ -542,7 +594,7 @@ def train_arima_optuna_step(
             'timestamp': pd.Timestamp.now(),
             'metadata': str(best_params)
         })
-        
+
         results_data.append({
             'result_type': 'model_config',
             'component': 'hyperparameters',
@@ -551,7 +603,7 @@ def train_arima_optuna_step(
             'timestamp': pd.Timestamp.now(),
             'metadata': 'weekly_seasonality'
         })
-        
+
         results_data.append({
             'result_type': 'optimization',
             'component': 'optuna_study',
@@ -560,7 +612,7 @@ def train_arima_optuna_step(
             'timestamp': pd.Timestamp.now(),
             'metadata': str(optimization_results)
         })
-        
+
         for metric_name, metric_value in eval_metrics.items():
             results_data.append({
                 'result_type': 'evaluation',
@@ -570,7 +622,7 @@ def train_arima_optuna_step(
                 'timestamp': pd.Timestamp.now(),
                 'metadata': 'test_set_performance'
             })
-        
+
         for i, (date, actual, predicted) in enumerate(zip(
             test_series.index[-10:], test_series.values[-10:], eval_forecast.values[-10:]
         )):
@@ -582,7 +634,7 @@ def train_arima_optuna_step(
                 'timestamp': date,
                 'metadata': f'test_period_{i+1}'
             })
-        
+
         results_data.append({
             'result_type': 'summary',
             'component': 'training_info',
@@ -591,15 +643,15 @@ def train_arima_optuna_step(
             'timestamp': pd.Timestamp.now(),
             'metadata': 'training_data_summary'
         })
-        
+
         results_df = pd.DataFrame(results_data)
-        
+
         training_summary = {
             "data_periods": len(time_series),
             "books_count": df_work['book_name'].nunique(),
             "total_volume": float(time_series.sum())
         }
-        
+
         hyperparameters_dict = {
             "best_params": best_params,
             "optimization_results": optimization_results,
@@ -608,21 +660,21 @@ def train_arima_optuna_step(
             "training_summary": training_summary,
             "model_signature": f"SARIMAX_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
         }
-        
+
         best_hyperparameters_json = json.dumps(hyperparameters_dict, indent=2, default=str)
-        
+
         logger.info(f"ARIMA training completed successfully!")
         logger.info(f"Results DataFrame shape: {results_df.shape}")
         logger.info(f"Best ARIMA parameters: {best_params}")
         logger.info(f"Test performance - RMSE: {eval_metrics['rmse']:.2f}, MAE: {eval_metrics['mae']:.2f}")
         logger.info(f"Trained on {len(time_series)} periods from {df_work['book_name'].nunique()} books")
         logger.info(f"Residuals extracted with {len(residuals)} data points")
-        
-        return results_df, best_hyperparameters_json, final_model, residuals_df
-        
+
+        return results_df, best_hyperparameters_json, final_model, residuals_df, test_predictions_df, forecast_comparison_df
+
     except Exception as e:
         logger.error(f"ARIMA training failed: {str(e)}")
-        
+
         error_df = pd.DataFrame([{
             'result_type': 'error',
             'component': 'training_error',
@@ -631,24 +683,44 @@ def train_arima_optuna_step(
             'timestamp': pd.Timestamp.now(),
             'metadata': 'training_failure'
         }])
-        
+
         error_hyperparameters_dict = {
             "error": str(e),
             "best_params": {"p": 1, "d": 1, "q": 2, "P": 1, "D": 0, "Q": 1},
             "study_name": study_name,
             "model_signature": "ERROR_MODEL"
         }
-        
+
         error_hyperparameters_json = json.dumps(error_hyperparameters_dict, indent=2, default=str)
-        
+
         # Create empty residuals DataFrame for error case
         error_residuals_df = pd.DataFrame({
             'date': pd.to_datetime([]),
             'residuals': [],
             'model_signature': 'ERROR_MODEL'
         })
-        
-        return error_df, error_hyperparameters_json, None, error_residuals_df
+
+        error_test_predictions_df = pd.DataFrame({
+            'date': pd.to_datetime([]),
+            'actual': [],
+            'predicted': [],
+            'residuals': [],
+            'absolute_error': [],
+            'model_signature': 'ERROR_MODEL'
+        })
+
+        error_forecast_comparison_df = pd.DataFrame({
+            'period': [],
+            'date': pd.to_datetime([]),
+            'actual_volume': [],
+            'predicted_volume': [],
+            'absolute_error': [],
+            'percentage_error': [],
+            'squared_error': [],
+            'model_signature': 'ERROR_MODEL'
+        })
+
+        return error_df, error_hyperparameters_json, None, error_residuals_df, error_test_predictions_df, error_forecast_comparison_df
 
 # Helper steps to parse JSON outputs if needed
 @step
@@ -673,7 +745,7 @@ def book_sales_arima_pipeline(
 ) -> Dict:
     """
     Complete book sales data processing and ARIMA modeling pipeline.
-    
+
     This pipeline:
     1. Loads ISBN and UK weekly sales data
     2. Preprocesses and merges the data
@@ -684,23 +756,23 @@ def book_sales_arima_pipeline(
     7. Returns comprehensive results including model performance metrics
     """
     logger.info("Running complete book sales ARIMA pipeline")
-    
+
     # Load raw data
     df_isbns = load_isbn_data_step()
     df_uk_weekly = load_uk_weekly_data_step()
-    
+
     # Preprocess and merge
     df_merged = preprocess_and_merge_step(df_isbns=df_isbns, df_uk_weekly=df_uk_weekly)
-    
+
     # Analyze data quality (now returns JSON string)
     quality_report_json = analyze_data_quality_step(df_merged=df_merged)
-    
+
     # Save processed data
     processed_data_path = save_processed_data_step(
         df_merged=df_merged,
         output_dir=output_dir
     )
-    
+
     # Prepare data for modelling
     modelling_data = prepare_modelling_data_step(
         df_merged=df_merged,
@@ -708,18 +780,21 @@ def book_sales_arima_pipeline(
         column_name=column_name,
         split_size=split_size
     )
-    
-    # Train ARIMA models with Optuna optimization (now handles 4 outputs)
-    arima_results, best_hyperparameters_json, trained_model, residuals = train_arima_optuna_step(
-        modelling_data=modelling_data,
-        n_trials=n_trials,
-        study_name="book_sales_arima_optimization"
+
+    # Train ARIMA models with Optuna optimization (now handles 6 outputs)
+    arima_results, best_hyperparameters_json, trained_model, residuals, test_predictions, forecast_comparison = (
+        train_arima_optuna_step(
+            modelling_data=modelling_data,
+            output_dir=output_dir,
+            n_trials=n_trials,
+            study_name="book_sales_arima_optimization",
+        )
     )
-    
+
     # Optional: Parse JSON outputs back to dicts for pipeline return
     quality_report = parse_quality_report_step(quality_report_json)
     best_hyperparameters = parse_hyperparameters_step(best_hyperparameters_json)
-    
+
     return {
         "df_merged": df_merged,
         "quality_report": quality_report,  # Parsed dict
@@ -731,6 +806,8 @@ def book_sales_arima_pipeline(
         "best_hyperparameters_json": best_hyperparameters_json,  # Original JSON string
         "trained_model": trained_model,  # Model artifact
         "residuals": residuals,  # Residuals DataFrame artifact
+        "test_predictions": test_predictions,           # ADD THIS
+        "forecast_comparison": forecast_comparison,
     }
 
 # ------------------ MAIN ------------------ #
@@ -739,13 +816,13 @@ if __name__ == "__main__":
     # Set up output directory
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(project_root, 'data', 'processed')
-    
+
     # Define default parameters for ARIMA modeling
     default_selected_isbns = [
         '9780722532935',  # The Alchemist
         '9780241003008'   # The Very Hungry Caterpillar
     ]
-    
+
     # Run the complete ARIMA pipeline with proper parameters
     results = book_sales_arima_pipeline(
         output_dir=output_dir,
@@ -754,5 +831,5 @@ if __name__ == "__main__":
         split_size=32,
         n_trials=3  # Start with small number for testing
     )
-    
+
     print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")
