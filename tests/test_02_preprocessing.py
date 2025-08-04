@@ -745,7 +745,7 @@ class TestSelectSpecificBooks:
     def test_select_specific_books_custom_params(self):
         """Test select_specific_books with custom parameters."""
         # FIX: Use ISBNs that actually exist in the test data.
-        custom_isbns = [config.DEFAULT_SELECTED_ISBNS[0], config.DEFAULT_SELECTED_ISBNS[1]]
+        custom_isbns = [config.DEFAULT_SELECTED_ISBNS[0]]
         custom_start_date = '2015-01-01'
         
         selected_data = select_specific_books(

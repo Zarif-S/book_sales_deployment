@@ -44,12 +44,13 @@ class TestPrepareDataAfter2012:
         }, index=dates)
         
         # Create data that starts before 2012
+        dates_before_2012 = pd.date_range('2005-01-01', '2011-12-31', freq='W')
         self.data_before_2012 = pd.DataFrame({
-            'Volume': np.random.randint(50, 200, 100),
-            'Value': np.random.randint(500, 2000, 100),
-            'Title': ['Old Book'] * 100,
-            'ISBN': ['9780987654321'] * 100
-        }, index=pd.date_range('2005-01-01', '2011-12-31', freq='W'))
+            'Volume': np.random.randint(50, 200, len(dates_before_2012)),
+            'Value': np.random.randint(500, 2000, len(dates_before_2012)),
+            'Title': ['Old Book'] * len(dates_before_2012),
+            'ISBN': ['9780987654321'] * len(dates_before_2012)
+        }, index=dates_before_2012)
     
     def test_prepare_data_after_2012_success(self):
         """Test successful data preparation with default parameters."""
