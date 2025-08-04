@@ -124,52 +124,8 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
     fig.write_html(filepath)
     print(f"Plot saved to: {filepath}")
 
-    fig.show()
+    # fig.show()  # Commented out to prevent massive HTML output
     return fig
-
-# ------------------------------------------------------------------ #
-# 4.  Full forecast with fresh confidence intervals (optional)
-# ------------------------------------------------------------------ #
-def plot_full_forecast(train, test, model, steps=32, title="SARIMA forecast", save_path="plots"):
-    fcst = model.get_forecast(steps=steps)
-    mean = fcst.predicted_mean
-    ci   = fcst.conf_int()
-
-    fitted = model.get_prediction(start=train.index[0], end=train.index[-1]).predicted_mean
-
-    fig = go.Figure()
-    fig.add_trace(go.Scatter(x=train.index, y=train, mode="lines",
-                             name="Train", line=dict(color="blue")))
-    fig.add_trace(go.Scatter(x=test.index,  y=test,  mode="lines",
-                             name="Test",  line=dict(color="black")))
-    fig.add_trace(go.Scatter(x=mean.index, y=mean, mode="lines",
-                             name="Forecast", line=dict(color="red")))
-    # confidence band
-    fig.add_trace(go.Scatter(
-        x=list(mean.index)+list(mean.index[::-1]),
-        y=list(ci.iloc[:,1])+list(ci.iloc[:,0][::-1]),
-        fill='toself', fillcolor='rgba(128,128,128,0.2)',
-        line=dict(color='rgba(255,255,255,0)'), showlegend=False))
-
-    fig.add_trace(go.Scatter(x=fitted.index, y=fitted, mode="lines",
-                             name="Fitted", line=dict(color="green", dash="dash")))
-    fig.update_layout(title=title, xaxis_title="Date", yaxis_title="Volume",
-                      template="plotly_white", width=900, height=500)
-
-    mae  = mean_absolute_error(test, mean)
-    mape = mean_absolute_percentage_error(test, mean)
-    print(f"MAE:  {mae:,.2f}")
-    print(f"MAPE: {mape:,.2f}%")
-
-    # Save the plot
-    filename = "full_forecast.html"
-    filepath = os.path.join(save_path, filename)
-    fig.write_html(filepath)
-    print(f"Plot saved to: {filepath}")
-
-    fig.show()
-    return fig
-
 
 # ------------------------------------------------------------------ #
 # 5.  CLI entry-point
@@ -188,10 +144,4 @@ if __name__ == "__main__":
     # --------  Option A: use stored test-set predictions  -------- #
     plot_test_predictions(artefacts,
         title="SARIMA – test-set predictions (ZenML 0.84.0)",
-        save_path=PLOTS_FOLDER)
-
-    # --------  Option B: re-forecast with confidence intervals  -- #
-    train_s, test_s, sarima, book = extract_objects(artefacts, BOOK)
-    plot_full_forecast(train_s, test_s, sarima, steps=len(test_s),
-        title=f"SARIMA forecast – {book}",
         save_path=PLOTS_FOLDER)

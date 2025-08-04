@@ -418,7 +418,7 @@ def prepare_modelling_data_step(
 def train_arima_optuna_step(
     modelling_data: pd.DataFrame,
     output_dir: str,
-    n_trials: int = 3,
+    n_trials: int,
     study_name: str = "arima_optimization"
 ) -> Tuple[
     Annotated[pd.DataFrame, ArtifactConfig(name="arima_results")],
@@ -741,7 +741,7 @@ def book_sales_arima_pipeline(
     selected_isbns: List[str] = None,
     column_name: str = 'Volume',
     split_size: int = 32,
-    n_trials: int = 3
+    n_trials: int = 50
 ) -> Dict:
     """
     Complete book sales data processing and ARIMA modeling pipeline.
@@ -787,7 +787,7 @@ def book_sales_arima_pipeline(
             modelling_data=modelling_data,
             output_dir=output_dir,
             n_trials=n_trials,
-            study_name="book_sales_arima_optimization",
+            study_name="arima_optimization",
         )
     )
 
@@ -829,7 +829,7 @@ if __name__ == "__main__":
         selected_isbns=default_selected_isbns,
         column_name='Volume',
         split_size=32,
-        n_trials=3  # Start with small number for testing
+        n_trials=50  # Start with small number for testing
     )
 
     print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")
