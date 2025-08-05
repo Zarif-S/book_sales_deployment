@@ -37,21 +37,20 @@ def main():
     """Run the improved complete ARIMA pipeline."""
     try:
         logger.info("Starting IMPROVED ARIMA pipeline execution")
-        
+
         # Set up output directory
         output_dir = os.path.join(project_root, 'data', 'processed')
         os.makedirs(output_dir, exist_ok=True)
-        
+
         # Define parameters for ARIMA modeling
         selected_isbns = [
             '9780722532935',  # The Alchemist
-            '9780241003008'   # The Very Hungry Caterpillar
         ]
-        
+
         logger.info(f"Using ISBNs: {selected_isbns}")
         logger.info(f"Output directory: {output_dir}")
         logger.info("IMPROVEMENTS: Persistent Optuna storage, ZenML caching, structured outputs")
-        
+
         # Run the improved pipeline
         results = book_sales_arima_pipeline_improved(
             output_dir=output_dir,
@@ -60,20 +59,20 @@ def main():
             split_size=32,
             n_trials=30  # Configurable optimization trials
         )
-        
+
         logger.info("IMPROVED ARIMA pipeline completed successfully!")
         logger.info("Pipeline run completed. Check the ZenML dashboard for detailed results.")
-        
+
         # Note: ZenML pipelines return PipelineRunResponse objects, not dictionaries
         # The actual results are available through the ZenML dashboard and artifact store
         logger.info("Pipeline results are available in the ZenML dashboard and artifact store.")
         logger.info("You can access individual step outputs through the ZenML client.")
         logger.info("IMPROVEMENTS: Persistent Optuna storage will resume optimization in future runs.")
         logger.info("IMPROVEMENTS: ZenML caching will skip steps when inputs haven't changed.")
-        
+
         logger.info("Pipeline execution completed successfully!")
         return results
-        
+
     except Exception as e:
         logger.error(f"Pipeline execution failed: {str(e)}")
         logger.error(f"Error type: {type(e).__name__}")

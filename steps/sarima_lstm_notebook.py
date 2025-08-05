@@ -96,8 +96,8 @@ save_data_alchemist_sarima = {
     'test_data_alchemist': test_data_alchemist,  # Test data
     'forecast': forecast_SARIMA_alchemist,  # Forecast data
     'forecast_int': forecast_int_df_SARIMA_alchemist,  # Forecast confidence intervals
-    'aic_alchemist': model_results_1['AIC'],  # AIC value
-    'bic_alchemist': model_results_1['BIC'],  # BIC value
+    'aic_alchemist': model_results['AIC'],  # AIC value
+    'bic_alchemist': model_results['BIC'],  # BIC value
 }
 
 # Open a file in write-binary mode and save the dictionary
@@ -143,14 +143,10 @@ def scale_volume(train_data, test_data, column='Volume'):
 # Apply the function to Alchemist datasets
 train_data_alchemist, test_data_alchemist, scaler_alchemist = scale_volume(train_data_alchemist, test_data_alchemist)
 
-# Apply the function to Caterpillar datasets
-train_data_caterpillar, test_data_caterpillar, scaler_caterpillar = scale_volume(train_data_caterpillar, test_data_caterpillar)
 
 # Display the results
 display(train_data_alchemist.head())
 display(test_data_alchemist.head())
-display(train_data_caterpillar.head())
-display(test_data_caterpillar.head())
 
 # Sliding window function
 def create_input_sequences(lookback, forecast, sequence_data):
@@ -269,25 +265,18 @@ display(result_sarima_df_alchemist.head())
 train_data_alchemist['SARIMA Residuals'] = residuals_train
 display(train_data_alchemist.head())
 
-# Assuming result_sarima_df_caterpillar and result_sarima_df_alchemist are your DataFrames
-# Save the DataFrames as CSV files
-result_sarima_df_caterpillar.to_csv('result_sarima_df_caterpillar.csv', index=False)
+# Save the DataFrame as CSV file
 result_sarima_df_alchemist.to_csv('result_sarima_df_alchemist.csv', index=False)
 
 # If you're using Google Colab or Jupyter Notebook, you can download the files like this:
 from google.colab import files
 
-# Download the files to your local machine
-files.download('result_sarima_df_caterpillar.csv')
+# Download the file to your local machine
 files.download('result_sarima_df_alchemist.csv')
 
-# Assuming result_sarima_df_caterpillar and result_sarima_df_alchemist are your DataFrames
 # Save the DataFrames as CSV files
 train_data_alchemist.to_csv('train_data_alchemist.csv', index=False)
 test_data_alchemist.to_csv('test_data_alchemist.csv', index=False)
-
-train_data_caterpillar.to_csv('train_data_caterpillar.csv', index=False)
-test_data_caterpillar.to_csv('test_data_caterpillar.csv', index=False)
 
 # If you're using Google Colab or Jupyter Notebook, you can download the files like this:
 from google.colab import files
@@ -295,9 +284,6 @@ from google.colab import files
 # Download the files to your local machine
 files.download('train_data_alchemist.csv')
 files.download('test_data_alchemist.csv')
-
-files.download('train_data_caterpillar.csv')
-files.download('test_data_caterpillar.csv')
 
 print(train_data_alchemist.shape)  # For the training DataFrame
 print(test_data_alchemist.shape)    # For the test DataFrame
@@ -321,21 +307,6 @@ result_sarima_df_alchemist = result_sarima_df_alchemist.set_index(result_sarima_
 display(result_sarima_df_alchemist[-40:])
 display(test_data_alchemist.head())
 
-# Initialize the scaler
-scaler_caterpillar = MinMaxScaler(feature_range=(0, 1))
-
-# Fit the scaler on the SARIMA residuals from the training data
-result_sarima_df_caterpillar['SARIMA Residuals_scaled'] = scaler_caterpillar.fit_transform(result_sarima_df_caterpillar[['SARIMA Residuals']].values)
-
-# Transform (not fit) the SARIMA test forecast using the same scaler (use .values to avoid feature name mismatch)
-result_sarima_df_caterpillar['SARIMA Test_Forecast_Scaled'] = scaler_caterpillar.transform(result_sarima_df_caterpillar[['SARIMA Test_Forecast']].values)
-
-# Ensure the index remains as the DatetimeIndex from the original Series
-result_sarima_df_caterpillar = result_sarima_df_caterpillar.set_index(result_sarima_df_caterpillar.index)
-
-# Display the results for verification
-display(result_sarima_df_caterpillar[-40:])
-display(test_data_caterpillar.head())
 
 # Load the model results list and DataFrame from the pickle files
 with open('model_results_list_seq_SARIMA.pkl', 'rb') as file:

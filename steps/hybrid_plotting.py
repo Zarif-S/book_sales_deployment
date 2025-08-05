@@ -18,7 +18,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import our data loading functions
-from _05_lstm import load_arima_residuals_from_csv, prepare_residuals_for_lstm_training
+from _05_lstm import load_arima_residuals_from_csv, prepare_residuals_for_lstm_hybrid_training
 
 
 def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -181,52 +181,71 @@ def plot_prediction_comparison(
     """
     print("📈 Creating forecast comparison plot...")
     
+    # Ensure proper datetime indices
+    if not isinstance(series_train.index, pd.DatetimeIndex):
+        print("⚠️  Converting train series to datetime index")
+        # Create weekly datetime index for training data
+        end_date = pd.Timestamp.now()
+        train_dates = pd.date_range(end=end_date, periods=len(series_train), freq='W')
+        series_train = pd.Series(series_train.values, index=train_dates, name=series_train.name)
+    
+    if not isinstance(series_test.index, pd.DatetimeIndex):
+        print("⚠️  Converting test series to datetime index")
+        # Create weekly datetime index for test data, starting after training data ends
+        start_date = series_train.index.max() + pd.Timedelta(weeks=1)
+        test_dates = pd.date_range(start=start_date, periods=len(series_test), freq='W')
+        series_test = pd.Series(series_test.values, index=test_dates, name=series_test.name)
+    
     # Calculate metrics for hybrid forecast
     metrics = calculate_metrics(series_test.values, hybrid_forecast)
     
     # Create simple single plot
     fig = go.Figure()
     
-    # Add training data
+    # Add training data FIRST (chronologically first)
     fig.add_trace(
         go.Scatter(x=series_train.index, y=series_train.values,
                   mode='lines', name='Training Data',
-                  line=dict(color='blue', width=1),
-                  opacity=0.7)
+                  line=dict(color='blue', width=2),
+                  opacity=0.8)
     )
     
-    # Add test data (actual values)
+    # Add test data (actual values) AFTER training data
     fig.add_trace(
         go.Scatter(x=series_test.index, y=series_test.values,
                   mode='lines+markers', name='Actual Test Data',
-                  line=dict(color='red', width=3),
-                  marker=dict(size=4))
+                  line=dict(color='black', width=3),
+                  marker=dict(size=5))
     )
     
-    # Add hybrid model predictions
+    # Add hybrid model predictions (should appear with test data chronologically)
     fig.add_trace(
         go.Scatter(x=series_test.index, y=hybrid_forecast,
                   mode='lines+markers', name='Hybrid Model',
                   line=dict(color='green', width=2, dash='dash'),
-                  marker=dict(size=3))
+                  marker=dict(size=4))
     )
     
-    # Add first model forecast if provided
+    # Add first model forecast if provided (should appear with test data chronologically)
     if first_model_forecast is not None:
         fig.add_trace(
             go.Scatter(x=series_test.index, y=first_model_forecast,
                       mode='lines', name='First Model Only',
-                      line=dict(color='orange', width=1),
+                      line=dict(color='orange', width=2),
                       opacity=0.8)
         )
     
     # Add metrics annotation
     metrics_text = f"MAE: {metrics['MAE']:.2f} | MAPE: {metrics['MAPE']:.2f}% | RMSE: {metrics['RMSE']:.2f}"
     
-    # Update layout
+    # Update layout with proper date formatting
     fig.update_layout(
         title=dict(text=f"{title}<br><sub>{metrics_text}</sub>", x=0.5),
-        xaxis_title="Date",
+        xaxis=dict(
+            title="Date",
+            type='date',
+            tickformat='%Y-%m-%d'
+        ),
         yaxis_title="Volume",
         height=height,
         showlegend=True,
@@ -234,10 +253,15 @@ def plot_prediction_comparison(
         template='plotly_white'
     )
     
+    # Ensure chronological ordering by setting x-axis range
+    all_dates = list(series_train.index) + list(series_test.index)
+    fig.update_xaxes(range=[min(all_dates), max(all_dates)])
+    
     print(f"📊 Hybrid Model Performance:")
     print(f"   • MAE: {metrics['MAE']:.2f}")
     print(f"   • MAPE: {metrics['MAPE']:.2f}%")
     print(f"   • RMSE: {metrics['RMSE']:.2f}")
+    print(f"📅 Date range: {min(all_dates)} to {max(all_dates)}")
     
     return fig, metrics
 

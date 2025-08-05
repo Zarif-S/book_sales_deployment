@@ -59,6 +59,7 @@ step_settings = {
 # ------------------ STEPS ------------------ #
 
 @step(
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -97,6 +98,7 @@ def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_d
         raise
 
 @step(
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -135,6 +137,7 @@ def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="u
         raise
 
 @step(
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -155,6 +158,7 @@ def preprocess_and_merge_step(
         raise
 
 @step(
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
 )
@@ -224,6 +228,7 @@ def analyze_data_quality_step(df_merged: pd.DataFrame) -> Annotated[str, Artifac
         raise
 
 @step(
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
 )
@@ -272,6 +277,7 @@ def save_processed_data_step(
         raise
 
 @step(
+    enable_cache=False,  # Disable cache to force re-execution with our fix
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
     output_materializers=PandasMaterializer
@@ -291,7 +297,6 @@ def prepare_modelling_data_step(
         if selected_isbns is None:
             selected_isbns = [
                 '9780722532935',  # The Alchemist
-                '9780241003008'   # The Very Hungry Caterpillar
             ]
 
         logger.info(f"Preparing modelling data for {len(selected_isbns)} books: {selected_isbns}")
@@ -371,13 +376,14 @@ def prepare_modelling_data_step(
 
         logger.info(f"Successfully prepared modelling data for {len(prepared_data)} books")
 
-        # Create a DataFrame for visualization that contains the train/test data
+        # Create a DataFrame for visualization (FIXED - avoid duplication)
+        # Process train and test data separately to avoid date overlaps
         visualization_data = []
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
                 book_isbn = book_isbn_mapping.get(book_name, 'unknown')
 
-                # Add train data
+                # Add training data
                 for date, value in train_data.items():
                     visualization_data.append({
                         'book_name': book_name,
@@ -387,7 +393,7 @@ def prepare_modelling_data_step(
                         'isbn': book_isbn
                     })
 
-                # Add test data
+                # Add test data (no overlap since we're processing separately)
                 for date, value in test_data.items():
                     visualization_data.append({
                         'book_name': book_name,
@@ -402,7 +408,15 @@ def prepare_modelling_data_step(
         if not viz_df.empty:
             viz_df['date'] = pd.to_datetime(viz_df['date'])
             viz_df = viz_df.sort_values(['book_name', 'date'])
-            logger.info(f"Created visualization DataFrame with {len(viz_df)} rows")
+
+            # Remove any potential duplicates (safety check)
+            before_dedup = len(viz_df)
+            viz_df = viz_df.drop_duplicates(subset=['book_name', 'date', 'isbn'], keep='first')
+            after_dedup = len(viz_df)
+
+            logger.info(f"Created visualization DataFrame with {after_dedup} rows")
+            if before_dedup != after_dedup:
+                logger.warning(f"Removed {before_dedup - after_dedup} duplicate entries during visualization DataFrame creation")
 
         return viz_df
 
@@ -419,7 +433,7 @@ def train_arima_optuna_step(
     modelling_data: pd.DataFrame,
     output_dir: str,
     n_trials: int,
-    study_name: str = "arima_optimization"
+    study_name: str = "arima_optimization_no_duplicates"
 ) -> Tuple[
     Annotated[pd.DataFrame, ArtifactConfig(name="arima_results")],
     Annotated[str, ArtifactConfig(name="best_hyperparameters_json")],
@@ -787,7 +801,7 @@ def book_sales_arima_pipeline(
             modelling_data=modelling_data,
             output_dir=output_dir,
             n_trials=n_trials,
-            study_name="arima_optimization",
+            study_name="arima_optimization_no_duplicates",
         )
     )
 
@@ -820,7 +834,6 @@ if __name__ == "__main__":
     # Define default parameters for ARIMA modeling
     default_selected_isbns = [
         '9780722532935',  # The Alchemist
-        '9780241003008'   # The Very Hungry Caterpillar
     ]
 
     # Run the complete ARIMA pipeline with proper parameters
@@ -829,7 +842,7 @@ if __name__ == "__main__":
         selected_isbns=default_selected_isbns,
         column_name='Volume',
         split_size=32,
-        n_trials=50  # Start with small number for testing
+        n_trials=5  # Reduced for quick testing
     )
 
     print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")
