@@ -21,7 +21,8 @@ def load_arima_residuals_from_csv(data_dir: str = "data/processed") -> pd.DataFr
 
         # Check other possible locations
         alternative_paths = [
-            "data/arima_residuals.csv",
+            "arima_standalone_outputs/arima_residuals.csv",
+            "data/arima_residuals.csv", 
             "arima_residuals.csv",
             os.path.join(data_dir, "..", "arima_residuals.csv")
         ]

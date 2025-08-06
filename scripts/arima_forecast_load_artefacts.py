@@ -3,6 +3,7 @@ import plotly.graph_objects as go
 import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 import os
+import numpy as np
 
 # ------------------------------------------------------------------ #
 # 1.  Grab the most recent run of the pipeline and load artefacts
@@ -105,6 +106,38 @@ def extract_objects(artefacts, book_name: str | None = None):
 
 
 # ------------------------------------------------------------------ #
+# 2.5 Load ARIMA results from CSV files as fallback
+# ------------------------------------------------------------------ #
+
+def load_arima_results_from_csv(csv_dir="arima_standalone_outputs"):
+    """Load ARIMA results from CSV files if ZenML artifacts are not available."""
+    try:
+        # Load CSV files
+        forecast_comparison_path = os.path.join(csv_dir, "arima_forecast_comparison.csv")
+        predictions_path = os.path.join(csv_dir, "arima_predictions.csv")
+        residuals_path = os.path.join(csv_dir, "arima_residuals.csv")
+        
+        if not os.path.exists(forecast_comparison_path):
+            raise FileNotFoundError(f"ARIMA forecast comparison CSV not found: {forecast_comparison_path}")
+        
+        forecast_df = pd.read_csv(forecast_comparison_path)
+        predictions_df = pd.read_csv(predictions_path)
+        
+        # Convert date columns
+        forecast_df['date'] = pd.to_datetime(forecast_df['date'])
+        predictions_df['date'] = pd.to_datetime(predictions_df['date'])
+        
+        print(f"✅ Loaded ARIMA results from CSV files:")
+        print(f"   • Forecast comparison: {forecast_df.shape}")
+        print(f"   • Predictions: {predictions_df.shape}")
+        
+        return forecast_df, predictions_df
+        
+    except Exception as e:
+        print(f"❌ Failed to load ARIMA CSV files: {e}")
+        return None, None
+
+# ------------------------------------------------------------------ #
 # 3.  Simple plot that uses the stored test-set predictions
 # ------------------------------------------------------------------ #
 
@@ -159,6 +192,97 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
     # fig.show()  # Commented out to prevent massive HTML output
     return fig
 
+def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs", 
+                       title="ARIMA Standalone Forecast"):
+    """Plot ARIMA results loaded from CSV files."""
+    forecast_df, predictions_df = load_arima_results_from_csv(csv_dir)
+    
+    if forecast_df is None or predictions_df is None:
+        print("❌ Could not load ARIMA CSV data for plotting")
+        return None
+    
+    # Calculate metrics
+    mae = forecast_df['absolute_error'].mean()
+    mape = forecast_df['percentage_error'].mean()
+    rmse = np.sqrt(forecast_df['squared_error'].mean())
+    
+    # Load training data for context
+    train_path = "data/processed/combined_train_data.csv"
+    if os.path.exists(train_path):
+        train_data = pd.read_csv(train_path)
+        train_data['End Date'] = pd.to_datetime(train_data['End Date'])
+        train_dates = train_data['End Date']
+        train_volumes = train_data['Volume']
+    else:
+        # Create placeholder training data
+        train_dates = pd.date_range('2020-01-01', periods=500, freq='W-SAT')
+        train_volumes = [500] * len(train_dates)
+    
+    # Create plot
+    fig = go.Figure()
+    
+    # Add training data
+    fig.add_trace(go.Scatter(
+        x=train_dates,
+        y=train_volumes,
+        mode='lines',
+        name='Training Data',
+        line=dict(color='blue', width=2),
+        opacity=0.8
+    ))
+    
+    # Add actual test data
+    fig.add_trace(go.Scatter(
+        x=forecast_df['date'],
+        y=forecast_df['actual_volume'],
+        mode='lines+markers',
+        name='Actual Test Data',
+        line=dict(color='black', width=3),
+        marker=dict(size=5)
+    ))
+    
+    # Add ARIMA predictions
+    fig.add_trace(go.Scatter(
+        x=forecast_df['date'],
+        y=forecast_df['predicted_volume'],
+        mode='lines+markers',
+        name='ARIMA Forecast',
+        line=dict(color='red', width=2, dash='dash'),
+        marker=dict(size=4)
+    ))
+    
+    # Update layout with metrics
+    title_text = f'{title}<br><sub>MAE: {mae:.2f} | MAPE: {mape:.2f}% | RMSE: {rmse:.2f}</sub>'
+    
+    fig.update_layout(
+        title=title_text,
+        xaxis_title="Date",
+        yaxis_title="Volume",
+        legend=dict(x=0.01, y=0.99),
+        template='plotly_white',
+        width=1200,
+        height=500,
+        showlegend=True
+    )
+    
+    # Save files
+    os.makedirs(save_path, exist_ok=True)
+    html_filename = os.path.join(save_path, "arima_standalone_forecast.html")
+    png_filename = os.path.join(save_path, "arima_standalone_forecast.png")
+    
+    fig.write_html(html_filename)
+    fig.write_image(png_filename)
+    
+    print(f"📊 ARIMA CSV Results:")
+    print(f"   • MAE: {mae:.2f}")
+    print(f"   • MAPE: {mape:.2f}%")
+    print(f"   • RMSE: {rmse:.2f}")
+    print(f"📁 ARIMA plots saved:")
+    print(f"   • HTML: {html_filename}")
+    print(f"   • PNG: {png_filename}")
+    
+    return fig, {"mae": mae, "mape": mape, "rmse": rmse}
+
 # ------------------------------------------------------------------ #
 # 5.  CLI entry-point
 # ------------------------------------------------------------------ #
@@ -166,33 +290,65 @@ if __name__ == "__main__":
     PIPELINE_NAME = "book_sales_arima_pipeline"        # <- your pipeline
     BOOK          = None                               # or e.g. "The Alchemist"
     PLOTS_FOLDER  = "outputs"                          # outputs folder
+    CSV_FOLDER    = "arima_standalone_outputs"         # CSV fallback folder
 
     # Ensure plots folder exists
     os.makedirs(PLOTS_FOLDER, exist_ok=True)
 
-    artefacts, run = load_latest_run_outputs(PIPELINE_NAME)
-    print(f"Loaded artefacts from run: {run.name}")
-    
-    # List available artifacts for debugging
-    list_available_artifacts(artefacts)
+    print("🚀 Starting ARIMA forecast visualization...")
+    print("=" * 60)
 
-    # --------  Option A: use stored test-set predictions  -------- #
+    # --------  Option 1: Try to load from CSV files first (most recent)  -------- #
+    print("\n📋 Attempting to load ARIMA results from CSV files...")
     try:
-        plot_test_predictions(artefacts,
-            title="SARIMA – test-set predictions (ZenML 0.84.0)",
-            save_path=PLOTS_FOLDER)
+        if os.path.exists(CSV_FOLDER):
+            fig, metrics = plot_arima_from_csv(
+                csv_dir=CSV_FOLDER, 
+                save_path=PLOTS_FOLDER,
+                title="ARIMA Standalone Forecast"
+            )
+            if fig is not None:
+                print("✅ Successfully plotted ARIMA results from CSV files!")
+                print("=" * 60)
+                exit(0)  # Success, no need to try artifacts
+        else:
+            print(f"❌ CSV folder not found: {CSV_FOLDER}")
     except Exception as e:
-        print(f"Error plotting test predictions: {e}")
-        print("This might be due to changes in artifact structure.")
+        print(f"❌ Failed to plot from CSV: {e}")
+    
+    # --------  Option 2: Fallback to ZenML artifacts  -------- #
+    print("\n📋 Falling back to ZenML artifacts...")
+    try:
+        artefacts, run = load_latest_run_outputs(PIPELINE_NAME)
+        print(f"✅ Loaded artefacts from run: {run.name}")
         
-    # --------  Option B: extract train/test data manually  -------- #
-    try:
-        print("\nExtracting train/test data from separate artifacts...")
-        train, test, model, book_name = extract_objects(artefacts, BOOK)
-        print(f"Successfully extracted data for book: {book_name}")
-        print(f"Train data shape: {train.shape}")
-        print(f"Test data shape: {test.shape}")
-        print(f"Model type: {type(model).__name__}")
+        # List available artifacts for debugging
+        list_available_artifacts(artefacts)
+
+        # --------  Option A: use stored test-set predictions  -------- #
+        try:
+            plot_test_predictions(artefacts,
+                title="SARIMA – test-set predictions (ZenML artifacts)",
+                save_path=PLOTS_FOLDER)
+            print("✅ Successfully plotted from ZenML artifacts!")
+        except Exception as e:
+            print(f"❌ Error plotting test predictions: {e}")
+            print("This might be due to changes in artifact structure.")
+            
+        # --------  Option B: extract train/test data manually  -------- #
+        try:
+            print("\nExtracting train/test data from separate artifacts...")
+            train, test, model, book_name = extract_objects(artefacts, BOOK)
+            print(f"Successfully extracted data for book: {book_name}")
+            print(f"Train data shape: {train.shape}")
+            print(f"Test data shape: {test.shape}")
+            print(f"Model type: {type(model).__name__}")
+        except Exception as e:
+            print(f"Error extracting objects: {e}")
+            print("Please check that the pipeline has been run with the updated structure.")
+            
     except Exception as e:
-        print(f"Error extracting objects: {e}")
-        print("Please check that the pipeline has been run with the updated structure.")
+        print(f"❌ Failed to load ZenML artifacts: {e}")
+        print("Please ensure the pipeline has been run or CSV files are available.")
+    
+    print("\n" + "=" * 60)

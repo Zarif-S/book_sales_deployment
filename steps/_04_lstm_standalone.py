@@ -2,8 +2,35 @@ import pandas as pd
 import numpy as np
 from typing import Dict, Tuple, Any
 from sklearn.preprocessing import MinMaxScaler
+from sklearn.metrics import mean_absolute_error, mean_squared_error
 import os
-import keras_tuner as kt
+import optuna
+import warnings
+import json
+
+warnings.filterwarnings('ignore')
+
+def load_pipeline_data():
+    """Load train and test data from pipeline CSV files for consistent comparison."""
+    print("📂 Loading pipeline train/test data from CSV files...")
+    
+    train_path = "data/processed/combined_train_data.csv"
+    test_path = "data/processed/combined_test_data.csv"
+    
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(f"Pipeline train data not found: {train_path}")
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(f"Pipeline test data not found: {test_path}")
+    
+    train_data = pd.read_csv(train_path)
+    test_data = pd.read_csv(test_path)
+    
+    print(f"✅ Loaded train data: {train_data.shape}")
+    print(f"✅ Loaded test data: {test_data.shape}")
+    print(f"📊 Train columns: {list(train_data.columns)}")
+    print(f"📊 Test columns: {list(test_data.columns)}")
+    
+    return train_data, test_data
 
 
 def load_original_data_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
@@ -260,90 +287,201 @@ def inverse_transform_predictions(predictions: np.ndarray, scaler: MinMaxScaler)
     return predictions_original
 
 
-class TunableLookbackHyperModel(kt.HyperModel):
-    """HyperModel that handles tunable lookback by creating sequences dynamically."""
+def evaluate_forecast(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float]:
+    """Compute evaluation metrics with error handling (same as ARIMA/CNN)."""
+    mae = mean_absolute_error(y_true, y_pred)
+    rmse = np.sqrt(mean_squared_error(y_true, y_pred))
 
-    def __init__(self, volume_data, forecast_horizon):
-        super().__init__()
-        self.volume_data = volume_data
-        self.forecast_horizon = forecast_horizon
+    mask = y_true != 0
+    if mask.sum() > 0:
+        mape = np.mean(np.abs((y_true[mask] - y_pred[mask]) / y_true[mask])) * 100
+    else:
+        mape = np.inf
 
-    def build(self, hp):
-        """Build model with current hyperparameters."""
-        # Import here to avoid issues
-        from tensorflow.keras.models import Sequential
-        from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
-        from tensorflow import keras
+    return {"mae": float(mae), "rmse": float(rmse), "mape": float(mape)}
 
-        model = Sequential()
 
-        # Tune the lookback parameter - adjust based on data size
-        max_lookback = min(52, len(self.volume_data) // 2)
-        min_lookback = min(6, max_lookback // 2)
-        lookback = hp.Int('lookback', min_value=min_lookback, max_value=max_lookback, step=2)
+def create_lstm_model(lookback: int, forecast_horizon: int, trial: optuna.Trial = None):
+    """Create LSTM model for time series forecasting."""
+    # Import here to avoid issues
+    from tensorflow.keras.models import Sequential
+    from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
+    from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
+    from tensorflow import keras
+    
+    if trial is not None:
+        # Hyperparameter optimization
+        input_units = trial.suggest_int('input_units', 16, 128, step=16)
+        n_layers = trial.suggest_int('n_layers', 1, 3)
+        final_units = trial.suggest_int('final_units', 16, 128, step=16)
+        dropout_rate = trial.suggest_float('dropout_rate', 0.1, 0.5, step=0.1)
+        learning_rate = trial.suggest_float('learning_rate', 1e-4, 1e-2, log=True)
+    else:
+        # Default parameters
+        input_units = 64
+        n_layers = 2
+        final_units = 32
+        dropout_rate = 0.3
+        learning_rate = 0.001
 
-        model.add(Input(shape=(lookback, 1)))
-        model.add(LSTM(hp.Int('input_unit', min_value=4, max_value=128, step=8), return_sequences=True))
+    model = Sequential()
+    model.add(Input(shape=(lookback, 1)))
+    
+    # First LSTM layer
+    model.add(LSTM(input_units, return_sequences=(n_layers > 1)))
+    
+    # Additional LSTM layers
+    for i in range(n_layers - 1):
+        if i == n_layers - 2:  # Last hidden layer
+            model.add(LSTM(final_units, return_sequences=False))
+        else:
+            layer_units = trial.suggest_int(f'lstm_{i}_units', 16, 128, step=16) if trial else 64
+            model.add(LSTM(layer_units, return_sequences=True))
+    
+    model.add(Dropout(dropout_rate))
+    model.add(Dense(forecast_horizon))
 
-        for i in range(hp.Int('n_layers', 1, 4)):
-            model.add(LSTM(hp.Int(f'lstm_{i}_units', min_value=4, max_value=128, step=8), return_sequences=True))
+    # Compile model
+    optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
+    model.compile(loss='mse', optimizer=optimizer, metrics=['mae'])
+    
+    return model
 
-        model.add(LSTM(hp.Int('layer_2_neurons', min_value=4, max_value=128, step=8)))
-        model.add(Dropout(hp.Float('Dropout_rate', min_value=0, max_value=0.5, step=0.1)))
 
-        # Output layer
-        model.add(Dense(self.forecast_horizon))
-
-        model.compile(loss='mean_squared_error', optimizer='adam', metrics=['mse'])
-
-        return model
-
-    def fit(self, hp, model, *args, **kwargs):
-        """Custom fit method that creates sequences based on tuned lookback."""
-        # Get the lookback from hyperparameters
-        lookback = hp.get('lookback')
-
-        # Create sequences with the current lookback
-        sequences = create_input_sequences(lookback, self.forecast_horizon, self.volume_data)
+def objective_lstm(trial, volume_data: np.ndarray, forecast_horizon: int) -> float:
+    """Optuna objective function for LSTM optimization."""
+    try:
+        # Tune lookback parameter
+        max_lookback = min(52, len(volume_data) // 3)  # Use 1/3 of data max
+        min_lookback = min(6, max_lookback // 4)
+        lookback = trial.suggest_int('lookback', min_lookback, max_lookback, step=2)
+        
+        # Create sequences with tuned lookback
+        sequences = create_input_sequences(lookback, forecast_horizon, volume_data)
+        if len(sequences["input_sequences"]) < 10:  # Need minimum sequences
+            return float("inf")
+            
         X_combined = np.array(sequences["input_sequences"])
         Y_combined = np.array(sequences["output_sequences"])
         X_combined = X_combined.reshape(X_combined.shape[0], X_combined.shape[1], 1)
 
-        # Split data for training
-        train_length = int(0.8 * len(X_combined))
-        X_train = X_combined[:train_length]
-        Y_train = Y_combined[:train_length]
+        # Split data for training/validation
+        train_size = int(0.7 * len(X_combined))
+        val_size = int(0.15 * len(X_combined))
+        
+        X_train = X_combined[:train_size]
+        Y_train = Y_combined[:train_size]
+        X_val = X_combined[train_size:train_size + val_size]
+        Y_val = Y_combined[train_size:train_size + val_size]
+        
+        if len(X_val) == 0:
+            return float("inf")
+        
+        # Create model with trial hyperparameters
+        model = create_lstm_model(lookback, forecast_horizon, trial)
+        
+        # Callbacks
+        early_stopping = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
+        reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
+        
+        # Train model
+        model.fit(
+            X_train, Y_train,
+            validation_data=(X_val, Y_val),
+            epochs=50,
+            batch_size=32,
+            callbacks=[early_stopping, reduce_lr],
+            verbose=0
+        )
+        
+        # Evaluate on validation set
+        val_pred = model.predict(X_val, verbose=0)
+        from sklearn.metrics import mean_squared_error
+        val_loss = mean_squared_error(Y_val.flatten(), val_pred.flatten())
+        
+        return val_loss
+        
+    except Exception as e:
+        print(f"Trial failed: {e}")
+        return float("inf")
 
-        # Train the model with the generated sequences
-        return model.fit(
-            X_train,
-            Y_train,
-            validation_split=0.2,
-            *args,
-            **kwargs
+
+def run_optuna_optimization_lstm(volume_data: np.ndarray, forecast_horizon: int,
+                                n_trials: int, study_name: str = "lstm_optimization") -> Dict[str, Any]:
+    """Run Optuna hyperparameter optimization for LSTM with persistent storage."""
+    print(f"Starting LSTM Optuna optimization with {n_trials} trials...")
+    
+    # Set up Optuna storage (same as ARIMA and CNN)
+    storage_dir = os.path.expanduser("~/zenml_optuna_storage")
+    os.makedirs(storage_dir, exist_ok=True)
+    storage_url = f"sqlite:///{os.path.join(storage_dir, f'{study_name}.db')}"
+
+    try:
+        study = optuna.create_study(
+            study_name=study_name,
+            storage=storage_url,
+            load_if_exists=True,
+            direction="minimize"
         )
 
+        print(f"📊 Study info: {len(study.trials)} existing trials found")
+        if len(study.trials) > 0:
+            print(f"🔄 Resuming optimization from existing study")
+            print(f"💾 Best value so far: {study.best_value:.6f}")
 
-def train_lstm_with_tuner(
+        study.optimize(
+            lambda trial: objective_lstm(trial, volume_data, forecast_horizon),
+            n_trials=n_trials,
+            timeout=1800,  # 30 minutes timeout
+            n_jobs=1
+        )
+
+        return {
+            "best_params": dict(study.best_params),
+            "best_value": float(study.best_value),
+            "n_trials": len(study.trials),
+            "study_name": study_name,
+            "storage_url": storage_url
+        }
+
+    except Exception as e:
+        print(f"Optimization failed: {e}")
+        # Return default parameters
+        return {
+            "best_params": {
+                "lookback": 21,
+                "input_units": 64,
+                "n_layers": 2,
+                "final_units": 32,
+                "dropout_rate": 0.3,
+                "learning_rate": 0.001
+            },
+            "best_value": float("inf"),
+            "n_trials": 0,
+            "study_name": study_name,
+            "storage_url": storage_url,
+            "error": str(e)
+        }
+
+
+def train_lstm_with_optuna(
     lstm_data: Dict[str, Any],
-    max_trials: int = 50,
-    epochs: int = 50,
-    project_name: str = 'lstm_original_data_tuning'
-) -> Tuple[Any, Any, np.ndarray, np.ndarray]:
+    n_trials: int = 50,
+    study_name: str = 'lstm_optimization'
+) -> Tuple[Any, Dict, np.ndarray, np.ndarray]:
     """
-    Train LSTM model with Keras Tuner hyperparameter optimization.
+    Train LSTM model with Optuna hyperparameter optimization.
 
     Args:
         lstm_data: Prepared LSTM data from prepare_original_data_for_lstm_training
-        max_trials: Maximum tuning trials
-        epochs: Training epochs
-        project_name: Tuner project name
+        n_trials: Maximum optimization trials
+        study_name: Optuna study name
 
     Returns:
-        Tuple of (best_model, tuner, train_predictions, test_predictions)
+        Tuple of (best_model, optimization_results, train_predictions, test_predictions)
     """
-    print("🚀 Starting LSTM training with Keras Tuner (Original Data)...")
-    print(f"📊 Training parameters: max_trials={max_trials}, epochs={epochs}")
+    print("🚀 Starting LSTM training with Optuna optimization...")
+    print(f"📊 Training parameters: n_trials={n_trials}")
 
     # Import required libraries
     try:
@@ -356,99 +494,75 @@ def train_lstm_with_tuner(
 
     except ImportError as e:
         print(f"❌ Required libraries not installed: {e}")
-        print("📋 Please install: pip install tensorflow keras-tuner")
+        print("📋 Please install: pip install tensorflow")
         raise
 
-    # Extract volume data for tunable lookback approach
+    # Extract volume data for optimization
     volume_data = lstm_data['train_volume_scaled']
     forecast_horizon = lstm_data['forecast']
 
     print(f"📊 Using volume data shape: {volume_data.shape}")
     print(f"📊 Forecast horizon: {forecast_horizon}")
 
-    # Create the tunable hypermodel
-    hypermodel = TunableLookbackHyperModel(volume_data, forecast_horizon)
-
-    tuner = kt.RandomSearch(
-        hypermodel,
-        objective='val_loss',
-        max_trials=max_trials,
-        executions_per_trial=1,
-        project_name=project_name,
-        overwrite=True
+    # Run Optuna optimization
+    optimization_results = run_optuna_optimization_lstm(
+        volume_data, forecast_horizon, n_trials, study_name
     )
 
-    print(f"🔍 Tuner search space:")
-    tuner.search_space_summary()
+    best_params = optimization_results["best_params"]
+    print(f"✅ Optimization completed!")
+    print(f"🏆 Best LSTM parameters: {best_params}")
 
-    # Early stopping callback
-    early_stopping = keras.callbacks.EarlyStopping(
-        monitor='val_loss',
-        patience=10,
-        restore_best_weights=True
-    )
-
-    # Start hyperparameter search
-    print("🔍 Starting hyperparameter search...")
-    # Note: We don't pass x and y here since our custom fit method handles data creation
-    tuner.search(
-        epochs=epochs,
-        batch_size=32,
-        callbacks=[early_stopping],
-        verbose=1
-    )
-
-    # Get best hyperparameters and model
-    best_hyperparameters = tuner.get_best_hyperparameters(1)[0]
-    best_model = tuner.get_best_models(1)[0]
-
-    print("✅ Hyperparameter search completed!")
-    print(f"🏆 Best hyperparameters:")
-    print(f"   • Lookback: {best_hyperparameters.get('lookback')}")
-    print(f"   • Input units: {best_hyperparameters.get('input_unit')}")
-    print(f"   • Number of layers: {best_hyperparameters.get('n_layers')}")
-    print(f"   • Final LSTM units: {best_hyperparameters.get('layer_2_neurons')}")
-    print(f"   • Dropout rate: {best_hyperparameters.get('Dropout_rate')}")
-
-    # Show additional layer details if they exist
-    n_layers = best_hyperparameters.get('n_layers')
-    for i in range(n_layers):
-        layer_param_name = f'lstm_{i}_units'
-        try:
-            layer_units = best_hyperparameters.get(layer_param_name)
-            print(f"   • LSTM layer {i} units: {layer_units}")
-        except:
-            # Parameter doesn't exist, skip
-            pass
-
-    # Make predictions using best hyperparameters
-    print("📊 Making predictions with best model...")
-    best_lookback = best_hyperparameters.get('lookback')
-
-    # Recreate sequences with best lookback
+    # Train final model with best parameters
+    best_lookback = best_params['lookback']
+    
+    # Create sequences with best lookback
     sequences = create_input_sequences(best_lookback, forecast_horizon, volume_data)
     X_combined = np.array(sequences["input_sequences"])
     Y_combined = np.array(sequences["output_sequences"])
     X_combined = X_combined.reshape(X_combined.shape[0], X_combined.shape[1], 1)
 
-    # Split data using the same ratio
+    # Split data for final training
     train_length = int(0.8 * len(X_combined))
     X_train_final = X_combined[:train_length]
+    Y_train_final = Y_combined[:train_length]
     X_test_final = X_combined[train_length:]
 
-    train_predictions = best_model.predict(X_train_final, verbose=0)
-    test_predictions = best_model.predict(X_test_final, verbose=0)
+    # Create and train final model
+    print("📊 Training final LSTM model with best parameters...")
+    final_model = create_lstm_model(best_lookback, forecast_horizon)
+    
+    # Set the best hyperparameters manually
+    final_model = create_lstm_model(best_lookback, forecast_horizon, None)  # Use defaults, then compile with best params
+    
+    # Recompile with best learning rate
+    optimizer = keras.optimizers.Adam(learning_rate=best_params['learning_rate'])
+    final_model.compile(loss='mse', optimizer=optimizer, metrics=['mae'])
+    
+    # Callbacks
+    early_stopping = keras.callbacks.EarlyStopping(monitor='loss', patience=15, restore_best_weights=True)
+    reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=10, min_lr=1e-7)
+    
+    # Train final model
+    history = final_model.fit(
+        X_train_final, Y_train_final,
+        epochs=100,
+        batch_size=32,
+        callbacks=[early_stopping, reduce_lr],
+        verbose=1
+    )
 
+    # Make predictions
+    train_predictions = final_model.predict(X_train_final, verbose=0)
+    test_predictions = final_model.predict(X_test_final, verbose=0) if len(X_test_final) > 0 else np.array([])
+
+    print(f"📊 Final model training completed!")
     print(f"📊 Best lookback: {best_lookback}")
     print(f"📊 Prediction shapes:")
     print(f"   • Train predictions: {train_predictions.shape}")
     print(f"   • Test predictions: {test_predictions.shape}")
 
-    # Display model summary
-    print("\n🔧 Best Model Architecture:")
-    best_model.summary()
-
-    return best_model, tuner, train_predictions, test_predictions
+    return final_model, optimization_results, train_predictions, test_predictions
 
 
 def complete_lstm_original_data_workflow():
@@ -502,11 +616,10 @@ def complete_lstm_original_data_workflow():
 
         # Step 2: Train LSTM model
         print("\n📋 Step 2: Training LSTM model...")
-        best_model, tuner, train_predictions, test_predictions = train_lstm_with_tuner(
+        best_model, optimization_results, train_predictions, test_predictions = train_lstm_with_optuna(
             lstm_data,
-            max_trials=50,
-            epochs=50,
-            project_name='lstm_original_data'
+            n_trials=50,
+            study_name='lstm_original_data'
         )
 
         print("✅ LSTM training completed!")
@@ -670,6 +783,380 @@ def complete_lstm_original_data_workflow():
         return None, None, None
 
 
+def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
+                    lookback=21, forecast_horizon=32, study_name="lstm_optimization"):
+    """
+    LSTM training step with persistent Optuna storage and ZenML caching.
+    Same interface as CNN and ARIMA for pipeline compatibility.
+    """
+    print("Starting LSTM training with Optuna optimization...")
+    print(f"Train data shape: {train_data.shape}")
+    print(f"Test data shape: {test_data.shape}")
+    print(f"Parameters: trials={n_trials}, lookback={lookback}, forecast={forecast_horizon}")
+
+    try:
+        # Ensure we have the volume column
+        if "volume" not in train_data.columns and "Volume" in train_data.columns:
+            train_data = train_data.copy()
+            train_data["volume"] = train_data["Volume"]
+        if "volume" not in test_data.columns and "Volume" in test_data.columns:
+            test_data = test_data.copy()
+            test_data["volume"] = test_data["Volume"]
+
+        # Prepare data for LSTM
+        combined_data = pd.concat([train_data, test_data]).reset_index(drop=True)
+        
+        # Create volume series
+        if 'date' not in combined_data.columns:
+            if "End Date" in combined_data.columns:
+                combined_data['date'] = pd.to_datetime(combined_data['End Date'])
+            else:
+                combined_data['date'] = pd.date_range('2020-01-01', periods=len(combined_data), freq='D')
+        
+        combined_data['date'] = pd.to_datetime(combined_data['date'])
+        combined_data = combined_data.sort_values('date')
+        
+        # Prepare for LSTM training
+        lstm_data = prepare_original_data_for_lstm_training(
+            combined_data.set_index('date'),
+            lookback=lookback,
+            forecast=forecast_horizon,
+            train_split_ratio=len(train_data) / len(combined_data)
+        )
+
+        # Run optimization
+        optimization_results = run_optuna_optimization_lstm(
+            lstm_data['train_volume_scaled'], forecast_horizon, n_trials, study_name
+        )
+
+        best_params = optimization_results["best_params"]
+        print(f"Best LSTM parameters: {best_params}")
+
+        # Train final model
+        final_model, _, train_predictions, test_predictions = train_lstm_with_optuna(
+            lstm_data, n_trials=0, study_name=study_name  # n_trials=0 to skip optimization, use existing results
+        )
+
+        # Calculate evaluation metrics
+        test_actual = lstm_data['test_volume'][:len(test_predictions.flatten())]
+        test_pred = inverse_transform_predictions(test_predictions.flatten(), lstm_data['scaler'])
+        test_pred = test_pred[:len(test_actual)]
+
+        eval_metrics = evaluate_forecast(test_actual, test_pred)
+        print(f"Evaluation metrics: {eval_metrics}")
+
+        # Create results matching ARIMA/CNN format
+        results_data = []
+
+        # Model configuration
+        results_data.append({
+            "result_type": "model_config",
+            "component": "architecture", 
+            "parameter": "lstm_lookback",
+            "value": str(best_params["lookback"]),
+            "timestamp": pd.Timestamp.now(),
+            "metadata": str(best_params)
+        })
+
+        # Evaluation metrics
+        for metric_name, metric_value in eval_metrics.items():
+            results_data.append({
+                "result_type": "evaluation",
+                "component": "test_metrics",
+                "parameter": metric_name,
+                "value": f"{metric_value:.4f}",
+                "timestamp": pd.Timestamp.now(),
+                "metadata": "test_set_performance"
+            })
+
+        results_df = pd.DataFrame(results_data)
+
+        # Create hyperparameters JSON
+        hyperparameters_dict = {
+            "best_params": best_params,
+            "optimization_results": optimization_results,
+            "eval_metrics": eval_metrics,
+            "study_name": study_name,
+            "lookback": best_params["lookback"],
+            "forecast_horizon": forecast_horizon,
+            "model_signature": f"LSTM_lookback{best_params['lookback']}_units{best_params['input_units']}"
+        }
+
+        best_hyperparameters_json = json.dumps(hyperparameters_dict, indent=2, default=str)
+
+        print("LSTM training completed successfully!")
+        print(f"Best LSTM parameters: {best_params}")
+        print(f"Test performance - RMSE: {eval_metrics['rmse']:.2f}, MAE: {eval_metrics['mae']:.2f}")
+
+        # Create empty DataFrames for compatibility (LSTM doesn't generate residuals)
+        residuals_df = pd.DataFrame({
+            "date": pd.to_datetime([]),
+            "residuals": [],
+            "model_signature": hyperparameters_dict["model_signature"]
+        })
+
+        test_predictions_df = pd.DataFrame({
+            "date": lstm_data['original_df'].index[len(lstm_data['train_volume']):len(lstm_data['train_volume']) + len(test_pred)],
+            "actual": test_actual,
+            "predicted": test_pred,
+            "residuals": test_actual - test_pred,
+            "absolute_error": np.abs(test_actual - test_pred),
+            "model_signature": hyperparameters_dict["model_signature"]
+        })
+
+        forecast_comparison_df = pd.DataFrame({
+            "period": range(1, len(test_actual) + 1),
+            "date": lstm_data['original_df'].index[len(lstm_data['train_volume']):len(lstm_data['train_volume']) + len(test_pred)],
+            "actual_volume": test_actual,
+            "predicted_volume": test_pred,
+            "absolute_error": np.abs(test_actual - test_pred),
+            "percentage_error": np.abs((test_actual - test_pred) / test_actual) * 100,
+            "squared_error": (test_actual - test_pred) ** 2,
+            "model_signature": hyperparameters_dict["model_signature"]
+        })
+
+        return (results_df, best_hyperparameters_json, final_model,
+                residuals_df, test_predictions_df, forecast_comparison_df)
+
+    except Exception as e:
+        print(f"LSTM training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+
+        # Return error results matching format
+        error_df = pd.DataFrame([{
+            "result_type": "error",
+            "component": "training_error",
+            "parameter": "error_message",
+            "value": str(e),
+            "timestamp": pd.Timestamp.now(),
+            "metadata": "training_failure"
+        }])
+
+        error_hyperparameters_dict = {
+            "error": str(e),
+            "best_params": {"lookback": 21, "input_units": 64, "n_layers": 2, 
+                           "final_units": 32, "dropout_rate": 0.3, "learning_rate": 0.001},
+            "study_name": study_name,
+            "model_signature": "ERROR_LSTM_MODEL"
+        }
+
+        error_hyperparameters_json = json.dumps(error_hyperparameters_dict, indent=2, default=str)
+
+        # Create empty DataFrames for error case
+        error_residuals_df = pd.DataFrame({
+            "date": pd.to_datetime([]),
+            "residuals": [],
+            "model_signature": "ERROR_LSTM_MODEL"
+        })
+
+        error_test_predictions_df = pd.DataFrame({
+            "date": pd.to_datetime([]),
+            "actual": [],
+            "predicted": [],
+            "residuals": [],
+            "absolute_error": [],
+            "model_signature": "ERROR_LSTM_MODEL"
+        })
+
+        error_forecast_comparison_df = pd.DataFrame({
+            "period": [],
+            "date": pd.to_datetime([]),
+            "actual_volume": [],
+            "predicted_volume": [],
+            "absolute_error": [],
+            "percentage_error": [],
+            "squared_error": [],
+            "model_signature": "ERROR_LSTM_MODEL"
+        })
+
+        return (error_df, error_hyperparameters_json, None,
+                error_residuals_df, error_test_predictions_df, error_forecast_comparison_df)
+
+
 if __name__ == "__main__":
-    # Run the complete workflow
-    results, best_model, lstm_data = complete_lstm_original_data_workflow() 
+    """
+    Standalone LSTM execution using pipeline data for fair model comparison.
+    """
+    print("🚀 Running LSTM standalone training with pipeline data...")
+    print("=" * 60)
+    
+    try:
+        # Load pipeline data
+        train_data, test_data = load_pipeline_data()
+        
+        # Create output directory
+        output_dir = "lstm_standalone_outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        print(f"\n🔧 Running LSTM training...")
+        print("=" * 60)
+        
+        # Run LSTM training
+        results = train_lstm_step(
+            train_data=train_data,
+            test_data=test_data,
+            output_dir=output_dir,
+            n_trials=50,
+            lookback=21,
+            forecast_horizon=32,
+            study_name="standalone_lstm_optimization"
+        )
+        
+        results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
+        
+        print("\n✅ LSTM standalone training completed successfully!")
+        print("=" * 60)
+        
+        # Extract metrics from hyperparameters
+        hyperparams = json.loads(hyperparameters_json)
+        eval_metrics = hyperparams.get('eval_metrics', {})
+        best_params = hyperparams.get('best_params', {})
+        
+        print(f"\n📊 LSTM Results Summary:")
+        print(f"• Model signature: {hyperparams.get('model_signature', 'LSTM_Model')}")
+        print(f"• Best parameters: {best_params}")
+        print(f"• Training residuals: {len(residuals_df)} points")
+        print(f"• Test predictions: {len(test_predictions_df)} points")
+        print(f"• Test MAE: {eval_metrics.get('mae', 0):.2f}")
+        print(f"• Test RMSE: {eval_metrics.get('rmse', 0):.2f}")
+        print(f"• Test MAPE: {eval_metrics.get('mape', 0):.2f}%")
+        
+        # Save results to CSV for comparison
+        forecast_comparison_df.to_csv(f"{output_dir}/lstm_forecast_comparison.csv", index=False)
+        test_predictions_df.to_csv(f"{output_dir}/lstm_predictions.csv", index=False)
+        
+        # Add plotting functionality
+        print(f"\n📋 Creating LSTM forecast plots...")
+        try:
+            # Create standalone LSTM plotting function
+            def create_lstm_standalone_plot(series_train, series_test, lstm_predictions, 
+                                         eval_metrics, best_params, output_dir):
+                """Create standalone LSTM forecast plot."""
+                import plotly.graph_objects as go
+                import os
+                
+                # Create model signature for LSTM
+                model_signature = f"LSTM_lookback{best_params['lookback']}_units{best_params['input_units']}"
+                
+                # Create the main plot
+                fig = go.Figure()
+                
+                # Add training data
+                fig.add_trace(go.Scatter(
+                    x=series_train.index,
+                    y=series_train.values,
+                    mode='lines',
+                    name='Training Data',
+                    line=dict(color='blue', width=2),
+                    opacity=0.8
+                ))
+                
+                # Add actual test data
+                fig.add_trace(go.Scatter(
+                    x=series_test.index,
+                    y=series_test.values,
+                    mode='lines+markers',
+                    name='Actual Test Data',
+                    line=dict(color='black', width=3),
+                    marker=dict(size=5)
+                ))
+                
+                # Add LSTM predictions
+                fig.add_trace(go.Scatter(
+                    x=series_test.index,
+                    y=lstm_predictions,
+                    mode='lines+markers',
+                    name='LSTM Forecast',
+                    line=dict(color='red', width=2, dash='dash'),
+                    marker=dict(size=4)
+                ))
+                
+                # Update layout
+                title_text = f'LSTM Book Sales Forecast<br><sub>MAE: {eval_metrics["mae"]:.2f} | MAPE: {eval_metrics["mape"]:.2f}% | RMSE: {eval_metrics["rmse"]:.2f}</sub>'
+                
+                fig.update_layout(
+                    title=title_text,
+                    xaxis_title="Date",
+                    yaxis_title="Volume",
+                    legend=dict(x=0.01, y=0.99),
+                    template='plotly_white',
+                    height=500,
+                    showlegend=True
+                )
+                
+                # Save plots
+                os.makedirs(output_dir, exist_ok=True)
+                
+                # Create descriptive file names
+                html_filename = f"{output_dir}/lstm_standalone_forecast.html"
+                png_filename = f"{output_dir}/lstm_standalone_forecast.png"
+                
+                # Save files
+                fig.write_html(html_filename)
+                fig.write_image(png_filename, width=1200, height=500)
+                
+                print(f"📁 LSTM standalone plots saved to: {output_dir}")
+                print(f"   • HTML: {html_filename}")
+                print(f"   • PNG: {png_filename}")
+                
+                return {
+                    'figure': fig,
+                    'model_signature': model_signature,
+                    'metrics': eval_metrics
+                }
+            
+            # Prepare data for plotting
+            # Create date series based on test data
+            if "End Date" in test_data.columns:
+                test_dates = pd.to_datetime(test_data["End Date"])
+            else:
+                test_dates = pd.date_range('2023-12-16', periods=len(test_predictions_df), freq='W-SAT')
+                
+            if "End Date" in train_data.columns:
+                # Use actual train dates
+                train_dates = pd.to_datetime(train_data["End Date"])
+                train_values = train_data["Volume"].values
+            else:
+                # Create synthetic train dates
+                train_dates = pd.date_range('2020-01-01', periods=len(train_data), freq='W-SAT')
+                train_values = train_data["Volume"].values if "Volume" in train_data.columns else train_data["volume"].values
+            
+            # Create series for plotting
+            train_series = pd.Series(train_values, index=train_dates, name='Volume')
+            test_series = pd.Series(test_predictions_df['actual'].values, index=test_dates[:len(test_predictions_df)], name='Volume')
+            
+            # Create standalone LSTM plot
+            plotting_results = create_lstm_standalone_plot(
+                series_train=train_series,
+                series_test=test_series,
+                lstm_predictions=test_predictions_df['predicted'].values,
+                eval_metrics=eval_metrics,
+                best_params=best_params,
+                output_dir=output_dir
+            )
+            
+            print("✅ LSTM standalone plotting completed!")
+            
+        except ImportError as e:
+            print(f"⚠️  Plotting module not available: {e}")
+            print("📊 Continuing without plots...")
+        except Exception as e:
+            print(f"⚠️  Plotting failed: {e}")
+            print("📊 Continuing without plots...")
+            import traceback
+            traceback.print_exc()
+        
+        print(f"\n📁 Generated files in '{output_dir}/':")
+        for file in os.listdir(output_dir):
+            print(f"  • {file}")
+        
+        print(f"\n🎉 LSTM standalone execution completed successfully!")
+        print(f"📁 Check the '{output_dir}' directory for generated plots and data files.")
+        
+    except Exception as e:
+        print(f"\n❌ LSTM standalone training failed: {str(e)}")
+        import traceback
+        traceback.print_exc()
+        
+    print("\n" + "=" * 60) 

@@ -6,7 +6,7 @@ import os
 import keras_tuner as kt
 
 
-def load_cnn_residuals_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
+def load_cnn_residuals_from_csv(data_dir: str = "cnn_standalone_outputs") -> pd.DataFrame:
     """
     Load residuals from CSV file saved by the CNN pipeline.
     """
@@ -21,6 +21,7 @@ def load_cnn_residuals_from_csv(data_dir: str = "data/processed") -> pd.DataFram
 
         # Check other possible locations
         alternative_paths = [
+            "data/processed/cnn_residuals.csv",
             "data/cnn_residuals.csv",
             "cnn_residuals.csv",
             os.path.join(data_dir, "..", "cnn_residuals.csv")
@@ -450,7 +451,7 @@ def train_lstm_with_tuner(
     return best_model, tuner, train_predictions, test_predictions
 
 
-def load_cnn_forecasts_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
+def load_cnn_forecasts_from_csv(data_dir: str = "cnn_standalone_outputs") -> pd.DataFrame:
     """
     Load CNN forecasts from CSV file saved by the CNN pipeline.
     """
@@ -465,6 +466,7 @@ def load_cnn_forecasts_from_csv(data_dir: str = "data/processed") -> pd.DataFram
 
         # Check other possible locations
         alternative_paths = [
+            "data/processed/cnn_forecasts.csv",
             "data/cnn_forecasts.csv",
             "cnn_forecasts.csv",
             os.path.join(data_dir, "..", "cnn_forecasts.csv")

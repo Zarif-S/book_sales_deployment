@@ -15,6 +15,28 @@ from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
 
 warnings.filterwarnings('ignore')
 
+def load_pipeline_data():
+    """Load train and test data from pipeline CSV files for consistent comparison."""
+    print("📂 Loading pipeline train/test data from CSV files...")
+    
+    train_path = "data/processed/combined_train_data.csv"
+    test_path = "data/processed/combined_test_data.csv"
+    
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(f"Pipeline train data not found: {train_path}")
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(f"Pipeline test data not found: {test_path}")
+    
+    train_data = pd.read_csv(train_path)
+    test_data = pd.read_csv(test_path)
+    
+    print(f"✅ Loaded train data: {train_data.shape}")
+    print(f"✅ Loaded test data: {test_data.shape}")
+    print(f"📊 Train columns: {list(train_data.columns)}")
+    print(f"📊 Test columns: {list(test_data.columns)}")
+    
+    return train_data, test_data
+
 # Set random seeds for reproducibility
 tf.random.set_seed(42)
 np.random.seed(42)
@@ -171,7 +193,7 @@ def run_optuna_optimization(X_train: np.ndarray, y_train: np.ndarray,
     print(f"   Training: {X_train_opt.shape}")
     print(f"   Validation: {X_val.shape}")
 
-    # Set up Optuna storage
+    # Set up Optuna storage (same as ARIMA)
     storage_dir = os.path.expanduser("~/zenml_optuna_storage")
     os.makedirs(storage_dir, exist_ok=True)
     storage_url = f"sqlite:///{os.path.join(storage_dir, f'{study_name}.db')}"
@@ -183,6 +205,11 @@ def run_optuna_optimization(X_train: np.ndarray, y_train: np.ndarray,
             load_if_exists=True,
             direction="minimize"
         )
+
+        print(f"📊 Study info: {len(study.trials)} existing trials found")
+        if len(study.trials) > 0:
+            print(f"🔄 Resuming optimization from existing study")
+            print(f"💾 Best value so far: {study.best_value:.6f}")
 
         study.optimize(
             lambda trial: objective(trial, X_train_opt, X_val, y_train_opt, y_val, sequence_length),
@@ -319,14 +346,18 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
         # Create time series from DataFrames
         train_df_reset = train_data.reset_index()
         if "date" not in train_df_reset.columns:
-            if pd.api.types.is_datetime64_any_dtype(train_data.index):
+            if "End Date" in train_df_reset.columns:
+                train_df_reset["date"] = pd.to_datetime(train_df_reset["End Date"])
+            elif pd.api.types.is_datetime64_any_dtype(train_data.index):
                 train_df_reset["date"] = train_data.index
             else:
                 raise ValueError("Could not determine date column for training data")
 
         test_df_reset = test_data.reset_index()
         if "date" not in test_df_reset.columns:
-            if pd.api.types.is_datetime64_any_dtype(test_data.index):
+            if "End Date" in test_df_reset.columns:
+                test_df_reset["date"] = pd.to_datetime(test_df_reset["End Date"])
+            elif pd.api.types.is_datetime64_any_dtype(test_data.index):
                 test_df_reset["date"] = test_data.index
             else:
                 raise ValueError("Could not determine date column for test data")
@@ -669,161 +700,28 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
 
 if __name__ == "__main__":
     """
-    Standalone execution for CNN training and forecasting.
-    First tries to load real project data, falls back to synthetic data if needed.
+    Standalone CNN execution using pipeline data for fair model comparison.
     """
-    import os
-    import sys
-    
-    print("🚀 Running CNN standalone training...")
-    print("=" * 60)
-    
-    def load_original_data_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
-        """
-        Load original sales data from CSV file for CNN training.
-        Uses the exact same approach as _04_lstm_standalone.py
-        """
-        print("🔍 Loading original sales data from CSV file...")
-
-        # Look for original data CSV in the data directory
-        original_csv_path = os.path.join(data_dir, "combined_test_data.csv")
-
-        if not os.path.exists(original_csv_path):
-            print(f"⚠️  Original data CSV not found at: {original_csv_path}")
-            print("📋 Checking for alternative locations...")
-
-            # Check other possible locations
-            alternative_paths = [
-                "data/combined_test_data.csv",
-                "combined_test_data.csv",
-                os.path.join(data_dir, "..", "combined_test_data.csv")
-            ]
-
-            for alt_path in alternative_paths:
-                if os.path.exists(alt_path):
-                    original_csv_path = alt_path
-                    print(f"✅ Found original data CSV at: {original_csv_path}")
-                    break
-            else:
-                raise FileNotFoundError(f"Original data CSV not found. Expected at: {original_csv_path}")
-
-        try:
-            original_df = pd.read_csv(original_csv_path)
-
-            # Convert date column to datetime and set as index
-            if 'date' in original_df.columns:
-                original_df['date'] = pd.to_datetime(original_df['date'])
-                original_df = original_df.set_index('date')
-
-            print(f"✅ Loaded original data from CSV: {original_csv_path}")
-            print(f"📈 Original data shape: {original_df.shape}")
-            print(f"📅 Date range: {original_df.index.min()} to {original_df.index.max()}")
-            
-            # Check for volume column
-            volume_col = None
-            for col in ['Volume', 'volume', 'sales', 'Sales']:
-                if col in original_df.columns:
-                    volume_col = col
-                    break
-            
-            if volume_col:
-                print(f"📊 Using volume column: {volume_col}")
-                print(f"📊 Volume stats - Mean: {original_df[volume_col].mean():.4f}, Std: {original_df[volume_col].std():.4f}")
-                return original_df
-            else:
-                print(f"⚠️  No volume column found. Available columns: {list(original_df.columns)}")
-                raise ValueError("No volume column found in data")
-
-        except Exception as e:
-            print(f"⚠️  Could not load original data CSV: {e}")
-            raise ValueError(f"Failed to load original data CSV: {e}")
-    
-    # Try to load real data
-    print("📊 Attempting to load real project data...")
-    try:
-        real_data = load_original_data_from_csv()
-    except Exception as e:
-        print(f"⚠️ Could not load real data: {e}")
-        real_data = None
-    
-    if real_data is not None and len(real_data) > 100:
-        print("✅ Using real project data for CNN training!")
-        
-        # Find the volume column
-        volume_col = None
-        for col in ['Volume', 'volume', 'sales', 'Sales']:
-            if col in real_data.columns:
-                volume_col = col
-                break
-        
-        if volume_col is None:
-            raise ValueError("No volume column found in real data")
-        
-        # Aggregate by date if needed (sum volumes for multiple ISBNs)
-        if real_data.index.duplicated().any():
-            print("📊 Aggregating data by date...")
-            volume_series = real_data.groupby(real_data.index)[volume_col].sum()
-        else:
-            volume_series = real_data[volume_col]
-        
-        # Convert to DataFrame format expected by train_cnn_step
-        sample_data = pd.DataFrame({
-            'date': volume_series.index,
-            'volume': volume_series.values
-        }).reset_index(drop=True)
-        
-        print(f"📊 Real data range: {sample_data['volume'].min():.2f} to {sample_data['volume'].max():.2f}")
-        
-        # Use more recent data (last 200 points) for better performance
-        if len(sample_data) > 200:
-            sample_data = sample_data.tail(200).copy()
-            print(f"📊 Using last 200 data points for training")
-        
-    else:
-        print("📊 Real data not available, creating synthetic data for demonstration...")
-        
-        # Generate synthetic time series data
-        dates = pd.date_range('2020-01-01', periods=200, freq='D')
-        np.random.seed(42)
-        
-        # Create realistic book sales pattern with trend and seasonality
-        trend = np.linspace(100, 200, 200)
-        seasonality = 20 * np.sin(2 * np.pi * np.arange(200) / 30)  # Monthly pattern
-        noise = np.random.normal(0, 10, 200)
-        volume = trend + seasonality + noise
-        
-        # Create DataFrame
-        sample_data = pd.DataFrame({
-            'date': dates,
-            'volume': volume
-        })
-        
-        print(f"✅ Created synthetic data with {len(sample_data)} points")
-        print(f"📊 Data range: {volume.min():.2f} to {volume.max():.2f}")
-    
-    # Split data
-    train_size = int(0.8 * len(sample_data))
-    train_data = sample_data.iloc[:train_size].copy()
-    test_data = sample_data.iloc[train_size:].copy()
-    
-    print(f"📊 Splitting data for CNN training...")
-    print(f"✅ Training set: {len(train_data)} points")
-    print(f"✅ Test set: {len(test_data)} points")
-    
-    # Create output directory
-    output_dir = "cnn_standalone_outputs"
-    os.makedirs(output_dir, exist_ok=True)
-    
-    print(f"\n🔧 Running CNN training with plotting...")
+    print("🚀 Running CNN standalone training with pipeline data...")
     print("=" * 60)
     
     try:
+        # Load pipeline data
+        train_data, test_data = load_pipeline_data()
+        
+        # Create output directory
+        output_dir = "cnn_standalone_outputs"
+        os.makedirs(output_dir, exist_ok=True)
+        
+        print(f"\n🔧 Running CNN training...")
+        print("=" * 60)
+        
         # Run CNN training
         results = train_cnn_step(
             train_data=train_data,
             test_data=test_data,
             output_dir=output_dir,
-            n_trials=10,  # Reduced for faster execution
+            n_trials=50,
             sequence_length=12,
             forecast_horizon=32,
             study_name="standalone_cnn_optimization"
@@ -835,13 +733,13 @@ if __name__ == "__main__":
         print("=" * 60)
         
         # Extract metrics from hyperparameters
-        import json
         hyperparams = json.loads(hyperparameters_json)
         eval_metrics = hyperparams.get('eval_metrics', {})
         best_params = hyperparams.get('best_params', {})
         
-        print(f"\n📊 Results Summary:")
+        print(f"\n📊 CNN Results Summary:")
         print(f"• Model signature: {hyperparams.get('model_signature', 'CNN_Model')}")
+        print(f"• Best parameters: {best_params}")
         print(f"• Training residuals: {len(residuals_df)} points")
         print(f"• Test predictions: {len(test_predictions_df)} points")
         print(f"• Test MAE: {eval_metrics.get('mae', 0):.2f}")
@@ -853,7 +751,7 @@ if __name__ == "__main__":
             if file.endswith(('.csv', '.html', '.png')):
                 print(f"  • {file}")
         
-        print(f"\n🎉 Standalone execution completed successfully!")
+        print(f"\n🎉 CNN standalone execution completed successfully!")
         print(f"📁 Check the '{output_dir}' directory for generated plots and data files.")
         
     except Exception as e:
