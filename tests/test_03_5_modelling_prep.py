@@ -57,8 +57,8 @@ class TestPrepareDataAfter2012:
         train_data, test_data = prepare_data_after_2012(self.test_data, 'Volume')
         
         # Check that we get the expected data types
-        assert isinstance(train_data, pd.Series)
-        assert isinstance(test_data, pd.Series)
+        assert isinstance(train_data, pd.DataFrame)
+        assert isinstance(test_data, pd.DataFrame)
         
         # Check that test data has the default split size (32)
         assert len(test_data) == 32
@@ -96,11 +96,11 @@ class TestPrepareDataAfter2012:
         train_data, test_data = prepare_data_after_2012(self.test_data, 'Value', 32)
         
         # Check that we're using the correct column
-        assert train_data.name == 'Value'
-        assert test_data.name == 'Value'
+        assert 'Value' in train_data.columns
+        assert 'Value' in test_data.columns
         
         # Check that the data matches the original
-        original_value_data = self.test_data[self.test_data.index >= '2012-01-01']['Value']
+        original_value_data = self.test_data[self.test_data.index >= '2012-01-01']
         assert len(train_data) + len(test_data) == len(original_value_data)
     
     def test_prepare_data_after_2012_insufficient_data(self):
@@ -135,10 +135,10 @@ class TestPrepareDataAfter2012:
         pd.testing.assert_frame_equal(original_data, self.test_data)
         
         # Check that train and test data are views/subsets of original
-        original_after_2012 = self.test_data[self.test_data.index >= '2012-01-01']['Volume']
+        original_after_2012 = self.test_data[self.test_data.index >= '2012-01-01']
         combined_data = pd.concat([train_data, test_data]).sort_index()
         
-        pd.testing.assert_series_equal(combined_data, original_after_2012)
+        pd.testing.assert_frame_equal(combined_data, original_after_2012)
 
 
 class TestPrepareMultipleBooksData:
@@ -198,19 +198,19 @@ class TestPrepareMultipleBooksData:
         for book_name, (train_data, test_data) in prepared_data.items():
             assert train_data is not None
             assert test_data is not None
-            assert isinstance(train_data, pd.Series)
-            assert isinstance(test_data, pd.Series)
+            assert isinstance(train_data, pd.DataFrame)
+            assert isinstance(test_data, pd.DataFrame)
             assert len(test_data) == 32  # Default split size
-            assert train_data.name == 'Volume'
-            assert test_data.name == 'Volume'
+            assert 'Volume' in train_data.columns
+            assert 'Volume' in test_data.columns
     
     def test_prepare_multiple_books_data_custom_column(self):
         """Test preparation with custom column."""
         prepared_data = prepare_multiple_books_data(self.books_data, 'Value', 16)
         
         for book_name, (train_data, test_data) in prepared_data.items():
-            assert train_data.name == 'Value'
-            assert test_data.name == 'Value'
+            assert 'Value' in train_data.columns
+            assert 'Value' in test_data.columns
             assert len(test_data) == 16
     
     def test_prepare_multiple_books_data_with_error(self):
@@ -246,11 +246,11 @@ class TestPrepareMultipleBooksData:
         
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
-                original_data = self.books_data[book_name][self.books_data[book_name].index >= '2012-01-01']['Volume']
+                original_data = self.books_data[book_name][self.books_data[book_name].index >= '2012-01-01']
                 combined_data = pd.concat([train_data, test_data]).sort_index()
                 
                 # Check that combined data matches original
-                pd.testing.assert_series_equal(combined_data, original_data)
+                pd.testing.assert_frame_equal(combined_data, original_data)
                 
                 # Check that train and test don't overlap
                 assert train_data.index.max() < test_data.index.min()
@@ -287,8 +287,8 @@ class TestIntegrationScenarios:
         assert test_data.index.freq == 'W', "Data should maintain weekly frequency"
         
         # Check for stationarity indicators (basic checks)
-        assert train_data.std() > 0, "Training data should have variation"
-        assert test_data.std() > 0, "Test data should have variation"
+        assert train_data['Volume'].std() > 0, "Training data should have variation"
+        assert test_data['Volume'].std() > 0, "Test data should have variation"
         
         # Check that data is continuous
         all_data = pd.concat([train_data, test_data]).sort_index()
@@ -327,10 +327,10 @@ class TestIntegrationScenarios:
             assert len(test_data) == 32, f"Test data should have 32 entries for {book_name}"
             
             # Check data quality
-            assert not train_data.isna().any(), f"No NaN values in training data for {book_name}"
-            assert not test_data.isna().any(), f"No NaN values in test data for {book_name}"
-            assert (train_data >= 0).all(), f"No negative values in training data for {book_name}"
-            assert (test_data >= 0).all(), f"No negative values in test data for {book_name}"
+            assert not train_data.isna().any().any(), f"No NaN values in training data for {book_name}"
+            assert not test_data.isna().any().any(), f"No NaN values in test data for {book_name}"
+            assert (train_data['Volume'] >= 0).all(), f"No negative values in Volume training data for {book_name}"
+            assert (test_data['Volume'] >= 0).all(), f"No negative values in Volume test data for {book_name}"
 
 
 if __name__ == "__main__":
