@@ -1,3 +1,6 @@
+
+#### DO NOT RUN THIS ##########
+
 #!/usr/bin/env python3
 """
 Script to run the IMPROVED complete ARIMA pipeline for book sales data.
@@ -24,7 +27,7 @@ from pathlib import Path
 project_root = Path(__file__).parent.parent
 sys.path.insert(0, str(project_root))
 
-from pipelines.zenml_pipeline_with_arima_improved import book_sales_arima_pipeline_improved
+from pipelines.zenml_pipeline_latest_31_jul import book_sales_arima_pipeline
 
 # Set up logging
 logging.basicConfig(
@@ -52,7 +55,7 @@ def main():
         logger.info("IMPROVEMENTS: Persistent Optuna storage, ZenML caching, structured outputs")
 
         # Run the improved pipeline
-        results = book_sales_arima_pipeline_improved(
+        results = book_sales_arima_pipeline(
             output_dir=output_dir,
             selected_isbns=selected_isbns,
             column_name='Volume',

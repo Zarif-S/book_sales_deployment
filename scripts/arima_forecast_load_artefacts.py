@@ -32,32 +32,63 @@ def load_latest_run_outputs(pipeline_name: str):
     return artefacts, run
 
 
+def list_available_artifacts(artefacts):
+    """Helper function to list all available artifacts for debugging."""
+    print("Available artifacts:")
+    for step_name, step_artifacts in artefacts.items():
+        print(f"  Step: {step_name}")
+        for artifact_name, artifact_obj in step_artifacts.items():
+            obj_type = type(artifact_obj).__name__
+            if hasattr(artifact_obj, 'shape'):
+                print(f"    - {artifact_name}: {obj_type} {artifact_obj.shape}")
+            else:
+                print(f"    - {artifact_name}: {obj_type}")
+
+
 # ------------------------------------------------------------------ #
 # 2.  Pull the objects we need (model, train/test, predictions)
+# Updated for separate train_data and test_data artifacts
 # ------------------------------------------------------------------ #
 def extract_objects(artefacts, book_name: str | None = None):
     """Return train_series, test_series and the fitted SARIMA model."""
-    # modelling_data DataFrame (created in prepare_modelling_data_step)
+    # Find train_data and test_data DataFrames (separate artifacts now)
+    train_df = None
+    test_df = None
+    
     for d in artefacts.values():
         for name, obj in d.items():
-            if "modelling_data" in name and isinstance(obj, pd.DataFrame):
-                modelling_df = obj
-                break
-        else:
-            continue
-        break
-    else:
-        raise RuntimeError("Could not locate 'modelling_data' artefact")
+            if "train_data" in name and isinstance(obj, pd.DataFrame):
+                train_df = obj
+            elif "test_data" in name and isinstance(obj, pd.DataFrame):
+                test_df = obj
+    
+    if train_df is None:
+        raise RuntimeError("Could not locate 'train_data' artefact")
+    if test_df is None:
+        raise RuntimeError("Could not locate 'test_data' artefact")
 
     # choose book
     if not book_name:
-        book_name = modelling_df["book_name"].unique()[0]
+        book_name = train_df["book_name"].unique()[0]
 
-    book_df = modelling_df[modelling_df.book_name == book_name]
-    train = book_df[book_df.data_type == "train"].set_index("date")["volume"].sort_index()
-    test  = book_df[book_df.data_type == "test"].set_index("date")["volume"].sort_index()
+    # Filter by book and extract volume series
+    book_train_df = train_df[train_df.book_name == book_name]
+    book_test_df = test_df[test_df.book_name == book_name]
+    
+    if book_train_df.empty:
+        raise RuntimeError(f"No training data found for book: {book_name}")
+    if book_test_df.empty:
+        raise RuntimeError(f"No test data found for book: {book_name}")
+    
+    # Create time series (data is already indexed by date from our pipeline)
+    # If 'volume' column exists, use it; otherwise use 'Volume'
+    volume_col = 'volume' if 'volume' in book_train_df.columns else 'Volume'
+    
+    train = book_train_df[volume_col].sort_index()
+    test = book_test_df[volume_col].sort_index()
 
     # SARIMA model (output 'trained_model' of train_arima_optuna_step)
+    model = None
     for d in artefacts.values():
         for name, obj in d.items():
             if "trained_model" in name:
@@ -66,7 +97,8 @@ def extract_objects(artefacts, book_name: str | None = None):
         else:
             continue
         break
-    else:
+    
+    if model is None:
         raise RuntimeError("Could not find a trained model artefact")
 
     return train, test, model, book_name
@@ -140,8 +172,27 @@ if __name__ == "__main__":
 
     artefacts, run = load_latest_run_outputs(PIPELINE_NAME)
     print(f"Loaded artefacts from run: {run.name}")
+    
+    # List available artifacts for debugging
+    list_available_artifacts(artefacts)
 
     # --------  Option A: use stored test-set predictions  -------- #
-    plot_test_predictions(artefacts,
-        title="SARIMA – test-set predictions (ZenML 0.84.0)",
-        save_path=PLOTS_FOLDER)
+    try:
+        plot_test_predictions(artefacts,
+            title="SARIMA – test-set predictions (ZenML 0.84.0)",
+            save_path=PLOTS_FOLDER)
+    except Exception as e:
+        print(f"Error plotting test predictions: {e}")
+        print("This might be due to changes in artifact structure.")
+        
+    # --------  Option B: extract train/test data manually  -------- #
+    try:
+        print("\nExtracting train/test data from separate artifacts...")
+        train, test, model, book_name = extract_objects(artefacts, BOOK)
+        print(f"Successfully extracted data for book: {book_name}")
+        print(f"Train data shape: {train.shape}")
+        print(f"Test data shape: {test.shape}")
+        print(f"Model type: {type(model).__name__}")
+    except Exception as e:
+        print(f"Error extracting objects: {e}")
+        print("Please check that the pipeline has been run with the updated structure.")

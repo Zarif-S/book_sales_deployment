@@ -284,10 +284,14 @@ def save_processed_data_step(
 )
 def prepare_modelling_data_step(
     df_merged: pd.DataFrame,
+    output_dir: str,
     selected_isbns: List[str] = None,
     column_name: str = 'Volume',
     split_size: int = 32
-) -> Annotated[pd.DataFrame, ArtifactConfig(name="modelling_data")]:
+) -> Tuple[
+    Annotated[pd.DataFrame, ArtifactConfig(name="train_data")],
+    Annotated[pd.DataFrame, ArtifactConfig(name="test_data")]
+]:
     """
     Prepare data for ARIMA modeling by splitting into train/test sets for selected books.
     """
@@ -338,11 +342,12 @@ def prepare_modelling_data_step(
         if not books_data:
             raise ValueError("No valid book data found for any of the selected ISBNs")
 
-        # Prepare train/test data for each book
+        # Prepare train/test data for each book with CSV output
         prepared_data = prepare_multiple_books_data(
             books_data=books_data,
             column_name=column_name,
-            split_size=split_size
+            split_size=split_size,
+            output_dir=output_dir
         )
 
         # Create metadata for the step (convert all to strings)
@@ -376,61 +381,86 @@ def prepare_modelling_data_step(
 
         logger.info(f"Successfully prepared modelling data for {len(prepared_data)} books")
 
-        # Create a DataFrame for visualization (FIXED - avoid duplication)
-        # Process train and test data separately to avoid date overlaps
-        visualization_data = []
+        # Create separate train and test DataFrames
+        train_data_list = []
+        test_data_list = []
+
         for book_name, (train_data, test_data) in prepared_data.items():
             if train_data is not None and test_data is not None:
                 book_isbn = book_isbn_mapping.get(book_name, 'unknown')
 
-                # Add training data
-                for date, value in train_data.items():
-                    visualization_data.append({
-                        'book_name': book_name,
-                        'date': date,
-                        'volume': value,  # Use lowercase 'volume' consistently
-                        'data_type': 'train',
-                        'isbn': book_isbn
-                    })
+                # Add book identifier columns to train data
+                train_copy = train_data.copy()
+                train_copy['data_type'] = 'train'
+                train_data_list.append(train_copy)
 
-                # Add test data (no overlap since we're processing separately)
-                for date, value in test_data.items():
-                    visualization_data.append({
-                        'book_name': book_name,
-                        'date': date,
-                        'volume': value,  # Use lowercase 'volume' consistently
-                        'data_type': 'test',
-                        'isbn': book_isbn
-                    })
+                # Add book identifier columns to test data
+                test_copy = test_data.copy()
+                test_copy['data_type'] = 'test'
+                test_data_list.append(test_copy)
 
-        # Create DataFrame for visualization
-        viz_df = pd.DataFrame(visualization_data)
-        if not viz_df.empty:
-            viz_df['date'] = pd.to_datetime(viz_df['date'])
-            viz_df = viz_df.sort_values(['book_name', 'date'])
+        # Combine all books' train data into one DataFrame
+        train_df = pd.concat(train_data_list, ignore_index=False) if train_data_list else pd.DataFrame()
 
-            # Remove any potential duplicates (safety check)
-            before_dedup = len(viz_df)
-            viz_df = viz_df.drop_duplicates(subset=['book_name', 'date', 'isbn'], keep='first')
-            after_dedup = len(viz_df)
+        # Combine all books' test data into one DataFrame
+        test_df = pd.concat(test_data_list, ignore_index=False) if test_data_list else pd.DataFrame()
 
-            logger.info(f"Created visualization DataFrame with {after_dedup} rows")
-            if before_dedup != after_dedup:
-                logger.warning(f"Removed {before_dedup - after_dedup} duplicate entries during visualization DataFrame creation")
+        logger.info(f"Created train DataFrame with shape: {train_df.shape}")
+        logger.info(f"Created test DataFrame with shape: {test_df.shape}")
 
-        return viz_df
+        # Save combined train and test data to CSV
+        if not train_df.empty:
+            train_csv_path = os.path.join(output_dir, 'combined_train_data.csv')
+            train_df.to_csv(train_csv_path, index=True)
+            logger.info(f"Saved combined training data to: {train_csv_path}")
+
+        if not test_df.empty:
+            test_csv_path = os.path.join(output_dir, 'combined_test_data.csv')
+            test_df.to_csv(test_csv_path, index=True)
+            logger.info(f"Saved combined test data to: {test_csv_path}")
+
+        # Add metadata for train data
+        try:
+            context = get_step_context()
+            train_metadata = {
+                "train_shape": str(train_df.shape),
+                "train_books": str(train_df['book_name'].nunique() if not train_df.empty else 0),
+                "train_csv_path": train_csv_path if not train_df.empty else "N/A",
+                "preparation_timestamp": pd.Timestamp.now().isoformat()
+            }
+            context.add_output_metadata(
+                output_name="train_data",
+                metadata=train_metadata
+            )
+
+            test_metadata = {
+                "test_shape": str(test_df.shape),
+                "test_books": str(test_df['book_name'].nunique() if not test_df.empty else 0),
+                "test_csv_path": test_csv_path if not test_df.empty else "N/A",
+                "preparation_timestamp": pd.Timestamp.now().isoformat()
+            }
+            context.add_output_metadata(
+                output_name="test_data",
+                metadata=test_metadata
+            )
+            logger.info("Successfully added train/test data metadata")
+        except Exception as e:
+            logger.error(f"Failed to add train/test data metadata: {e}")
+
+        return train_df, test_df
 
     except Exception as e:
         logger.error(f"Failed to prepare modelling data: {e}")
         raise
 
 @step(
-    enable_cache=True,
+    enable_cache=False,
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
 )
 def train_arima_optuna_step(
-    modelling_data: pd.DataFrame,
+    train_data: pd.DataFrame,
+    test_data: pd.DataFrame,
     output_dir: str,
     n_trials: int,
     study_name: str = "arima_optimization_no_duplicates"
@@ -446,20 +476,55 @@ def train_arima_optuna_step(
     ARIMA training step with persistent Optuna storage and ZenML caching.
     """
     logger.info("Starting ARIMA + Optuna training step")
-    logger.info(f"Input data shape: {modelling_data.shape}")
+    logger.info(f"Train data shape: {train_data.shape}")
+    logger.info(f"Test data shape: {test_data.shape}")
     logger.info(f"Optuna study name: {study_name}, n_trials: {n_trials}")
 
-    required_cols = ['book_name', 'date', 'volume', 'data_type', 'isbn']
-    missing_cols = [col for col in required_cols if col not in modelling_data.columns]
-    if missing_cols:
-        raise ValueError(f"Missing required columns: {missing_cols}")
+    # Process train and test data separately (don't combine them)
+    # We already have properly split train and test data, so use them directly
 
-    df_work = modelling_data.copy()
-    df_work['isbn'] = df_work['isbn'].astype(str)
+    # Add volume column if it doesn't exist (using the target column from the data)
+    if 'volume' not in train_data.columns and 'Volume' in train_data.columns:
+        train_data = train_data.copy()
+        train_data['volume'] = train_data['Volume']
+    if 'volume' not in test_data.columns and 'Volume' in test_data.columns:
+        test_data = test_data.copy()
+        test_data['volume'] = test_data['Volume']
+
+    required_cols = ['book_name', 'volume', 'isbn']
+    for data_name, data in [('train_data', train_data), ('test_data', test_data)]:
+        missing_cols = [col for col in required_cols if col not in data.columns]
+        if missing_cols:
+            raise ValueError(f"Missing required columns in {data_name}: {missing_cols}")
+
+    # Ensure ISBN is string type
+    train_data['isbn'] = train_data['isbn'].astype(str)
+    test_data['isbn'] = test_data['isbn'].astype(str)
 
     try:
-        time_series = create_time_series_from_df(df_work, target_col="volume", date_col="date")
-        train_series, test_series = split_time_series(time_series, test_size=32)
+        # Create time series from training data only
+        train_df_reset = train_data.reset_index()
+        if 'date' not in train_df_reset.columns:
+            if pd.api.types.is_datetime64_any_dtype(train_data.index):
+                train_df_reset['date'] = train_data.index
+            else:
+                raise ValueError("Could not determine date column for training data")
+
+        # Create time series from test data only
+        test_df_reset = test_data.reset_index()
+        if 'date' not in test_df_reset.columns:
+            if pd.api.types.is_datetime64_any_dtype(test_data.index):
+                test_df_reset['date'] = test_data.index
+            else:
+                raise ValueError("Could not determine date column for test data")
+
+        # Create separate time series for train and test
+        train_series = create_time_series_from_df(train_df_reset, target_col="volume", date_col="date")
+        test_series = create_time_series_from_df(test_df_reset, target_col="volume", date_col="date")
+
+        logger.info(f"Training series shape: {train_series.shape}, Test series shape: {test_series.shape}")
+        logger.info(f"Training period: {train_series.index.min()} to {train_series.index.max()}")
+        logger.info(f"Test period: {test_series.index.min()} to {test_series.index.max()}")
 
         optimization_results = run_optuna_optimization(
             train_series,
@@ -500,9 +565,10 @@ def train_arima_optuna_step(
         logger.info(f"Created test predictions DataFrame with {len(test_predictions_df)} rows")
         logger.info(f"Created forecast comparison DataFrame with {len(forecast_comparison_df)} rows")
 
-        final_model = train_final_arima_model(time_series, best_params)
+        # The eval_model is already trained on training data only, so use it as the final model
+        final_model = eval_model
 
-        # Extract residuals from the final model
+        # Extract residuals from the training-only model (eval_model)
         residuals = final_model.resid
         residuals_df = pd.DataFrame({
             'date': residuals.index,
@@ -527,8 +593,8 @@ def train_arima_optuna_step(
                     mlflow.log_params(best_params)
                     for metric_name, metric_value in eval_metrics.items():
                         mlflow.log_metric(metric_name, metric_value)
-                    mlflow.log_metric("data_points", len(time_series))
-                    mlflow.log_metric("training_books", df_work['book_name'].nunique())
+                    mlflow.log_metric("data_points", len(train_series))
+                    mlflow.log_metric("training_books", train_data['book_name'].nunique())
                     mlflow.log_metric("optuna_trials", optimization_results["n_trials"])
                     mlflow.log_metric("best_rmse", optimization_results["best_value"])
         except Exception as e:
@@ -539,8 +605,8 @@ def train_arima_optuna_step(
         metadata_to_log = {
             "best_params": str(best_params),
             "eval_metrics": str(eval_metrics),
-            "training_periods": str(len(time_series)),
-            "books_count": str(df_work['book_name'].nunique()),
+            "training_periods": str(len(train_series)),
+            "books_count": str(train_data['book_name'].nunique()),
             "study_name": study_name,
             "optuna_trials": str(optimization_results["n_trials"]),
             "best_rmse": str(optimization_results["best_value"])
@@ -653,7 +719,7 @@ def train_arima_optuna_step(
             'result_type': 'summary',
             'component': 'training_info',
             'parameter': 'data_summary',
-            'value': f"periods:{len(time_series)},books:{df_work['book_name'].nunique()},total_volume:{time_series.sum():.0f}",
+            'value': f"periods:{len(train_series)},books:{train_data['book_name'].nunique()},total_volume:{train_series.sum():.0f}",
             'timestamp': pd.Timestamp.now(),
             'metadata': 'training_data_summary'
         })
@@ -661,9 +727,9 @@ def train_arima_optuna_step(
         results_df = pd.DataFrame(results_data)
 
         training_summary = {
-            "data_periods": len(time_series),
-            "books_count": df_work['book_name'].nunique(),
-            "total_volume": float(time_series.sum())
+            "data_periods": len(train_series),
+            "books_count": train_data['book_name'].nunique(),
+            "total_volume": float(train_series.sum())
         }
 
         hyperparameters_dict = {
@@ -681,7 +747,7 @@ def train_arima_optuna_step(
         logger.info(f"Results DataFrame shape: {results_df.shape}")
         logger.info(f"Best ARIMA parameters: {best_params}")
         logger.info(f"Test performance - RMSE: {eval_metrics['rmse']:.2f}, MAE: {eval_metrics['mae']:.2f}")
-        logger.info(f"Trained on {len(time_series)} periods from {df_work['book_name'].nunique()} books")
+        logger.info(f"Trained on {len(train_series)} periods from {train_data['book_name'].nunique()} books")
         logger.info(f"Residuals extracted with {len(residuals)} data points")
 
         return results_df, best_hyperparameters_json, final_model, residuals_df, test_predictions_df, forecast_comparison_df
@@ -755,7 +821,7 @@ def book_sales_arima_pipeline(
     selected_isbns: List[str] = None,
     column_name: str = 'Volume',
     split_size: int = 32,
-    n_trials: int = 50
+    n_trials: int = 40
 ) -> Dict:
     """
     Complete book sales data processing and ARIMA modeling pipeline.
@@ -787,9 +853,10 @@ def book_sales_arima_pipeline(
         output_dir=output_dir
     )
 
-    # Prepare data for modelling
-    modelling_data = prepare_modelling_data_step(
+    # Prepare data for modelling - now returns separate train and test data
+    train_data, test_data = prepare_modelling_data_step(
         df_merged=df_merged,
+        output_dir=output_dir,
         selected_isbns=selected_isbns,
         column_name=column_name,
         split_size=split_size
@@ -798,7 +865,8 @@ def book_sales_arima_pipeline(
     # Train ARIMA models with Optuna optimization (now handles 6 outputs)
     arima_results, best_hyperparameters_json, trained_model, residuals, test_predictions, forecast_comparison = (
         train_arima_optuna_step(
-            modelling_data=modelling_data,
+            train_data=train_data,
+            test_data=test_data,
             output_dir=output_dir,
             n_trials=n_trials,
             study_name="arima_optimization_no_duplicates",
@@ -814,13 +882,14 @@ def book_sales_arima_pipeline(
         "quality_report": quality_report,  # Parsed dict
         "quality_report_json": quality_report_json,  # Original JSON string
         "processed_data_path": processed_data_path,
-        "modelling_data": modelling_data,
+        "train_data": train_data,  # Training data artifact
+        "test_data": test_data,    # Test data artifact
         "arima_results": arima_results,
         "best_hyperparameters": best_hyperparameters,  # Parsed dict
         "best_hyperparameters_json": best_hyperparameters_json,  # Original JSON string
         "trained_model": trained_model,  # Model artifact
         "residuals": residuals,  # Residuals DataFrame artifact
-        "test_predictions": test_predictions,           # ADD THIS
+        "test_predictions": test_predictions,
         "forecast_comparison": forecast_comparison,
     }
 
@@ -842,7 +911,7 @@ if __name__ == "__main__":
         selected_isbns=default_selected_isbns,
         column_name='Volume',
         split_size=32,
-        n_trials=5  # Reduced for quick testing
+        n_trials= 40  # Reduced for quick testing
     )
 
     print("Complete ARIMA pipeline run submitted! Check the ZenML dashboard for outputs.")

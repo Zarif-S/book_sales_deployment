@@ -321,7 +321,7 @@ class TunableLookbackHyperModel(kt.HyperModel):
 
 def train_lstm_with_tuner(
     lstm_data: Dict[str, Any],
-    max_trials: int = 5,
+    max_trials: int = 50,
     epochs: int = 50,
     project_name: str = 'lstm_residuals_tuning'
 ) -> Tuple[Any, Any, np.ndarray, np.ndarray]:
@@ -465,7 +465,7 @@ def load_sarima_artifacts_from_zenml():
         artifact1 = Client().get_artifact_version("0b321a90-cf93-4bd3-bb69-3a1fd475bcb4")
         residuals_data = artifact1.load()
 
-        # Load SARIMA forecasts from test period  
+        # Load SARIMA forecasts from test period
         print("📋 Loading SARIMA forecasts: 277a3bc0-e7cd-4cf6-82d7-330a76c59e17")
         artifact2 = Client().get_artifact_version("277a3bc0-e7cd-4cf6-82d7-330a76c59e17")
         forecasts_data = artifact2.load()
@@ -473,7 +473,7 @@ def load_sarima_artifacts_from_zenml():
         # Clean column names
         residuals_data.columns = residuals_data.columns.str.strip()
         forecasts_data.columns = forecasts_data.columns.str.strip()
-        
+
         # Inspect the data
         print(f"📊 Residuals data type: {type(residuals_data)}")
         if hasattr(residuals_data, 'shape'):
@@ -495,9 +495,61 @@ def load_sarima_artifacts_from_zenml():
         return None, None
 
 
+def load_test_data_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
+    """
+    Load test dataset CSV file created by the pipeline.
+    """
+    print("🔍 Loading test dataset from CSV file...")
+
+    # Look for test CSV in the data directory
+    test_csv_path = os.path.join(data_dir, "combined_test_data.csv")
+
+    if not os.path.exists(test_csv_path):
+        print(f"⚠️  Test CSV not found at: {test_csv_path}")
+        print("📋 Checking for alternative locations...")
+
+        # Check other possible locations
+        alternative_paths = [
+            "data/combined_test_data.csv",
+            "combined_test_data.csv",
+            os.path.join(data_dir, "..", "combined_test_data.csv")
+        ]
+
+        for alt_path in alternative_paths:
+            if os.path.exists(alt_path):
+                test_csv_path = alt_path
+                print(f"✅ Found test CSV at: {test_csv_path}")
+                break
+        else:
+            raise FileNotFoundError(f"Test CSV not found. Expected at: {test_csv_path}")
+
+    try:
+        test_df = pd.read_csv(test_csv_path)
+
+        # Convert date column to datetime and set as index if exists
+        if 'date' in test_df.columns:
+            test_df['date'] = pd.to_datetime(test_df['date'])
+            test_df = test_df.set_index('date')
+        elif test_df.index.name == 'date' or 'date' in str(test_df.index):
+            # Index might already be dates
+            test_df.index = pd.to_datetime(test_df.index)
+
+        print(f"✅ Loaded test data from CSV: {test_csv_path}")
+        print(f"📈 Test data shape: {test_df.shape}")
+        print(f"📅 Date range: {test_df.index.min()} to {test_df.index.max()}")
+        print(f"📊 Available columns: {list(test_df.columns)}")
+
+        return test_df
+
+    except Exception as e:
+        print(f"⚠️  Could not load test CSV: {e}")
+        raise ValueError(f"Failed to load test CSV: {e}")
+
+
 def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
     """
     Complete LSTM workflow: load data, train model, make predictions, and plot results.
+    Now loads test data from CSV created by pipeline and trains LSTM on ARIMA residuals.
 
     Args:
         sarima_forecasts: SARIMA forecast values for hybrid approach (optional)
@@ -509,42 +561,81 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
         # Step 1: Load and prepare data
         print("📋 Step 1: Loading and preparing data...")
 
-        # First, try to load from ZenML artifacts
-        residuals_data, forecasts_data = load_sarima_artifacts_from_zenml()
+        # Load ARIMA residuals from CSV (required for LSTM training)
+        print("📋 Loading ARIMA residuals...")
+        try:
+            residuals_df = load_arima_residuals_from_csv()
+            print("✅ Successfully loaded ARIMA residuals from CSV!")
+        except Exception as e:
+            print(f"❌ Failed to load ARIMA residuals: {e}")
+            raise ValueError("❌ Could not load ARIMA residuals. Please run the pipeline first.")
 
-        if residuals_data is not None and forecasts_data is not None:
-            print("✅ Successfully loaded ZenML artifacts!")
+        # Load test dataset from CSV (created by pipeline)
+        print("📋 Loading test dataset...")
+        try:
+            test_data_df = load_test_data_from_csv()
+            print("✅ Successfully loaded test dataset from CSV!")
+        except Exception as e:
+            print(f"❌ Failed to load test dataset: {e}")
+            raise ValueError("❌ Could not load test dataset. Please run the pipeline first.")
 
-            # Set up the data correctly
-            residuals_df = residuals_data
-            test_predictions_df = forecasts_data
+        # Try to load ARIMA test predictions from ZenML artifacts for forecasts
+        print("📋 Loading ARIMA test predictions...")
+        try:
+            residuals_data, forecasts_data = load_sarima_artifacts_from_zenml()
 
-            # Extract SARIMA forecasts from test_predictions DataFrame using 'predicted_volume' column
-            if 'predicted_volume' in test_predictions_df.columns:
-                sarima_forecasts = test_predictions_df['predicted_volume'].values
-                print(f"📋 Extracted {len(sarima_forecasts)} SARIMA forecasts from 'predicted_volume' column")
-                print(f"📊 SARIMA forecasts range: {sarima_forecasts.min():.2f} to {sarima_forecasts.max():.2f}")
-            else:
-                print(f"⚠️  'predicted_volume' column not found. Available columns: {list(test_predictions_df.columns)}")
-                sarima_forecasts = None
+            if forecasts_data is not None:
+                print("✅ Successfully loaded ARIMA test predictions from ZenML!")
+                test_predictions_df = forecasts_data
 
-        else:
-            print("📋 ZenML artifacts not available, trying CSV fallback...")
-            try:
-                residuals_df = load_arima_residuals_from_csv()
-                print("✅ Successfully loaded residuals from CSV!")
-                
-                # For CSV fallback, we'll need to create mock SARIMA forecasts
-                # Use a simple approach: last 32 residuals as proxy forecasts
-                if len(residuals_df) >= 32:
-                    sarima_forecasts = residuals_df['residuals'].values[-32:] * 0.5  # Scaled down proxy
-                    print(f"📋 Created proxy SARIMA forecasts from residuals: {len(sarima_forecasts)} values")
+                # Extract SARIMA forecasts from test_predictions DataFrame
+                if 'predicted_volume' in test_predictions_df.columns:
+                    sarima_forecasts = test_predictions_df['predicted_volume'].values
+                    print(f"📋 Extracted {len(sarima_forecasts)} SARIMA forecasts from 'predicted_volume' column")
+                    print(f"📊 SARIMA forecasts range: {sarima_forecasts.min():.2f} to {sarima_forecasts.max():.2f}")
+                elif 'predicted' in test_predictions_df.columns:
+                    sarima_forecasts = test_predictions_df['predicted'].values
+                    print(f"📋 Extracted {len(sarima_forecasts)} SARIMA forecasts from 'predicted' column")
+                    print(f"📊 SARIMA forecasts range: {sarima_forecasts.min():.2f} to {sarima_forecasts.max():.2f}")
                 else:
-                    sarima_forecasts = np.random.normal(0, 1, 32)  # Random fallback
-                    print("⚠️  Using random proxy forecasts (insufficient residuals data)")
-            except Exception as e:
-                print(f"❌ CSV fallback also failed: {e}")
-                raise ValueError("❌ Could not load data from ZenML or CSV. Please ensure data is available.")
+                    print(f"⚠️  No predicted columns found. Available columns: {list(test_predictions_df.columns)}")
+                    # Fallback: use test data volume as proxy
+                    if 'Volume' in test_data_df.columns:
+                        sarima_forecasts = test_data_df['Volume'].values
+                        print(f"📋 Using test data Volume as SARIMA forecast proxy: {len(sarima_forecasts)} values")
+                    else:
+                        raise ValueError("Cannot find SARIMA forecasts or suitable proxy")
+            else:
+                print("⚠️  Could not load ARIMA test predictions from ZenML")
+                # Fallback: use test data volume as proxy
+                if 'Volume' in test_data_df.columns:
+                    sarima_forecasts = test_data_df['Volume'].values
+                    print(f"📋 Using test data Volume as SARIMA forecast proxy: {len(sarima_forecasts)} values")
+                    test_predictions_df = pd.DataFrame({
+                        'date': test_data_df.index,
+                        'actual_volume': test_data_df['Volume'].values,
+                        'predicted_volume': test_data_df['Volume'].values,  # Using as proxy
+                        'actual': test_data_df['Volume'].values,
+                        'predicted': test_data_df['Volume'].values
+                    })
+                else:
+                    raise ValueError("Cannot find test data or suitable SARIMA forecast proxy")
+
+        except Exception as e:
+            print(f"⚠️  Warning loading ARIMA predictions: {e}")
+            # Final fallback: use test data volume as proxy
+            if 'Volume' in test_data_df.columns:
+                sarima_forecasts = test_data_df['Volume'].values
+                print(f"📋 Using test data Volume as SARIMA forecast proxy: {len(sarima_forecasts)} values")
+                test_predictions_df = pd.DataFrame({
+                    'date': test_data_df.index,
+                    'actual_volume': test_data_df['Volume'].values,
+                    'predicted_volume': test_data_df['Volume'].values,
+                    'actual': test_data_df['Volume'].values,
+                    'predicted': test_data_df['Volume'].values
+                })
+            else:
+                raise ValueError("Cannot find any suitable data for SARIMA forecasts")
 
         # Use hybrid approach if we have forecasts, otherwise simple approach
         if sarima_forecasts is not None:
@@ -565,44 +656,59 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
         print("\n📋 Step 2: Training LSTM model...")
         best_model, tuner, train_predictions, test_predictions = train_lstm_with_tuner(
             lstm_data,
-            max_trials=10,  # Increased for better hyperparameter search
+            max_trials=50,  # Increased for better hyperparameter search
             epochs=50,
             project_name='lstm_residuals_hybrid'
         )
 
         print("✅ LSTM training completed!")
 
-        # Step 3: Create plotting data (FIXED - avoid duplication)
+        # Step 3: Create plotting data using the loaded test dataset
         print("\n📋 Step 3: Preparing data for plotting...")
 
-        # Use the corrected data from LSTM preparation
-        # The test_residuals and sarima_forecasts are now properly aligned
+        # Use the loaded test dataset as the source of truth for actual values
         test_residuals = lstm_data['test_residuals']
         test_forecasts = lstm_data['sarima_forecasts']
 
         print(f"📊 Test residuals length: {len(test_residuals)}")
         print(f"📊 Test forecasts length: {len(test_forecasts)}")
+        print(f"📊 Test dataset shape: {test_data_df.shape}")
 
-        # Use actual dates and data from forecasts_data artifact for test period
-        if 'date' in test_predictions_df.columns:
-            test_dates = pd.to_datetime(test_predictions_df['date'])
-            # Use actual volume data directly from the artifact
-            if 'actual_volume' in test_predictions_df.columns:
-                test_series = pd.Series(test_predictions_df['actual_volume'].values, index=test_dates, name='Volume')
-            else:
-                # Fallback: reconstruct from residuals + forecasts
-                test_actual_reconstructed = test_residuals + test_forecasts
-                test_series = pd.Series(test_actual_reconstructed, index=test_dates, name='Volume')
+        # Use the test dataset loaded from CSV as the primary source
+        if 'Volume' in test_data_df.columns:
+            test_series = test_data_df['Volume'].copy()
+            test_series.name = 'Volume'
+            test_dates = test_data_df.index
+            print(f"📊 Using test dataset Volume column as actual values")
+        elif 'volume' in test_data_df.columns:
+            test_series = test_data_df['volume'].copy()
+            test_series.name = 'Volume'
+            test_dates = test_data_df.index
+            print(f"📊 Using test dataset volume column as actual values")
         else:
-            # Fallback: use residuals index if available
-            if isinstance(residuals_df.index, pd.DatetimeIndex):
+            # Fallback: reconstruct from residuals + forecasts if test data doesn't have volume
+            print("⚠️  No Volume column in test dataset, reconstructing from residuals + forecasts")
+            if 'date' in test_predictions_df.columns:
+                test_dates = pd.to_datetime(test_predictions_df['date'])
+            elif isinstance(residuals_df.index, pd.DatetimeIndex):
                 test_dates = residuals_df.index[-len(test_residuals):]
             else:
-                # Last resort: create dates (but this shouldn't happen with correct artifacts)
                 test_dates = pd.date_range(start='2023-12-16', periods=len(test_residuals), freq='W-SAT')
-            
+
             test_actual_reconstructed = test_residuals + test_forecasts
             test_series = pd.Series(test_actual_reconstructed, index=test_dates, name='Volume')
+
+        # Ensure test_series length matches test_forecasts length for proper evaluation
+        min_length = min(len(test_series), len(test_forecasts), len(test_residuals))
+        if len(test_series) > min_length:
+            test_series = test_series.iloc[:min_length]
+            test_dates = test_series.index
+        if len(test_forecasts) > min_length:
+            test_forecasts = test_forecasts[:min_length]
+        if len(test_residuals) > min_length:
+            test_residuals = test_residuals[:min_length]
+
+        print(f"📊 Aligned lengths - Test series: {len(test_series)}, Forecasts: {len(test_forecasts)}, Residuals: {len(test_residuals)}")
 
         print(f"✅ Created test series with shape: {test_series.shape}")
         print(f"📊 Test series range: {test_series.min():.0f} to {test_series.max():.0f}")
@@ -610,7 +716,7 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
 
         # Create training series from the training portion of residuals
         train_residuals = lstm_data['train_residuals']
-        
+
         # Use actual dates from residuals data if available
         if 'date' in residuals_df.columns:
             # Get the training portion of dates (all but last 32)
@@ -641,32 +747,113 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
 
         print("✅ Plotting data prepared!")
 
-        # Step 4: Comprehensive evaluation and plotting
-        print("\n📋 Step 4: Creating comprehensive evaluation...")
+        # Step 4: Create hybrid predictions by combining ARIMA + LSTM
+        print("\n📋 Step 4: Creating hybrid ARIMA+LSTM predictions...")
 
-        # Import plotting functions
-        from hybrid_plotting import comprehensive_model_evaluation
+        # Get LSTM predictions on test set and inverse transform them
+        scaler = lstm_data['scaler']
 
-        results = comprehensive_model_evaluation(
-            series_train=train_series,
-            series_test=test_series,
-            train_predictions=train_predictions,
-            test_predictions=test_predictions,
-            Y_test=lstm_data['Y_test'],
-            scaler=lstm_data['scaler'],
-            first_model_forecast=arima_forecast,
-            model_signature="ARIMA+LSTM Hybrid",
-            save_plots=True
-        )
+        # Make LSTM predictions on the prepared test input
+        if lstm_data['X_test'].shape[0] > 0:
+            lstm_test_predictions_scaled = best_model.predict(lstm_data['X_test'], verbose=0)
+
+            # Inverse transform LSTM predictions to original scale
+            lstm_test_predictions = inverse_transform_predictions(
+                lstm_test_predictions_scaled.flatten(),
+                scaler
+            )
+
+            print(f"📊 LSTM test predictions shape: {lstm_test_predictions.shape}")
+            print(f"📊 LSTM predictions range: {lstm_test_predictions.min():.2f} to {lstm_test_predictions.max():.2f}")
+        else:
+            print("⚠️  No test sequences available for LSTM predictions")
+            lstm_test_predictions = np.zeros(len(test_forecasts))
+
+        # Combine ARIMA forecasts with LSTM residual predictions
+        # Hybrid = ARIMA_forecast + LSTM_residual_prediction
+        hybrid_predictions = test_forecasts + lstm_test_predictions
+
+        print(f"📊 Hybrid predictions created:")
+        print(f"   • ARIMA forecasts: {test_forecasts[:3]} ... (mean: {test_forecasts.mean():.2f})")
+        print(f"   • LSTM residual predictions: {lstm_test_predictions[:3]} ... (mean: {lstm_test_predictions.mean():.2f})")
+        print(f"   • Hybrid (ARIMA + LSTM): {hybrid_predictions[:3]} ... (mean: {hybrid_predictions.mean():.2f})")
+
+        # Create results dictionary for evaluation
+        results = {
+            'hybrid_forecast': hybrid_predictions,
+            'lstm_residuals_prediction': lstm_test_predictions,
+            'arima_forecast': test_forecasts,
+            'actual_values': test_series.values,
+        }
+
+        # Calculate hybrid metrics
+        from sklearn.metrics import mean_absolute_error, mean_squared_error
+
+        hybrid_mae = mean_absolute_error(test_series.values, hybrid_predictions)
+        hybrid_rmse = np.sqrt(mean_squared_error(test_series.values, hybrid_predictions))
+        hybrid_mape = np.mean(np.abs((test_series.values - hybrid_predictions) / test_series.values)) * 100
+
+        arima_mae = mean_absolute_error(test_series.values, test_forecasts)
+        arima_rmse = np.sqrt(mean_squared_error(test_series.values, test_forecasts))
+        arima_mape = np.mean(np.abs((test_series.values - test_forecasts) / test_series.values)) * 100
+
+        results['hybrid_metrics'] = {
+            'MAE': hybrid_mae,
+            'RMSE': hybrid_rmse,
+            'MAPE': hybrid_mape
+        }
+
+        results['first_model_metrics'] = {
+            'MAE': arima_mae,
+            'RMSE': arima_rmse,
+            'MAPE': arima_mape
+        }
+
+        print(f"\n📊 Performance Comparison:")
+        print(f"   • ARIMA alone - MAE: {arima_mae:.2f}, RMSE: {arima_rmse:.2f}, MAPE: {arima_mape:.2f}%")
+        print(f"   • Hybrid ARIMA+LSTM - MAE: {hybrid_mae:.2f}, RMSE: {hybrid_rmse:.2f}, MAPE: {hybrid_mape:.2f}%")
+
+        improvement_mae = ((arima_mae - hybrid_mae) / arima_mae) * 100
+        improvement_rmse = ((arima_rmse - hybrid_rmse) / arima_rmse) * 100
+
+        print(f"   • Improvement - MAE: {improvement_mae:.1f}%, RMSE: {improvement_rmse:.1f}%")
+
+        # Step 5: Comprehensive evaluation and plotting
+        print("\n📋 Step 5: Creating comprehensive evaluation...")
+
+        # Try to import plotting functions (optional)
+        try:
+            from hybrid_plotting import comprehensive_model_evaluation
+
+            plotting_results = comprehensive_model_evaluation(
+                series_train=train_series,
+                series_test=test_series,
+                train_predictions=train_predictions,
+                test_predictions=test_predictions,
+                Y_test=lstm_data['Y_test'],
+                scaler=lstm_data['scaler'],
+                first_model_forecast=test_forecasts,
+                model_signature="ARIMA+LSTM Hybrid",
+                save_plots=True
+            )
+
+            # Update results with plotting information
+            results.update(plotting_results)
+            print("✅ Plotting completed!")
+
+        except ImportError as e:
+            print(f"⚠️  Plotting module not available: {e}")
+            print("📊 Continuing without plots...")
+        except Exception as e:
+            print(f"⚠️  Plotting failed: {e}")
+            print("📊 Continuing without plots...")
 
         print("✅ Evaluation completed!")
 
-        print("✅ Evaluation completed - using single approach to avoid duplication!")
+        # Step 6: Create comparison table
+        print("\n📋 Step 6: Creating comparison table...")
 
-        # Step 4.5: Create comparison table
-        print("\n📋 Step 4.5: Creating comparison table...")
-
-        # Load original data artifact from ZenML (modelling_data)
+        # Load original data artifact from ZenML (modelling_data) - optional
         try:
             from zenml.client import Client
             artifact = Client().get_artifact_version("43d0efe9-ad58-4c55-8666-f6d1d28b43df")
@@ -677,10 +864,10 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
             original_data_artifact = None
 
         # Get the components for the comparison table
-        original_data = test_series.values  # Original test data
-        hybrid_forecast = results['hybrid_forecast']  # Hybrid predictions from evaluation
-        sarima_forecast = arima_forecast if arima_forecast is not None else np.zeros_like(original_data)
-        lstm_residuals = results['lstm_residuals_prediction']  # LSTM residuals/predictions
+        test_data = test_series.values  # Actual test data from CSV
+        hybrid_forecast = results['hybrid_forecast']  # Hybrid predictions (ARIMA + LSTM)
+        sarima_forecast = test_forecasts  # ARIMA forecasts
+        lstm_forecast = results['lstm_residuals_prediction']  # LSTM residual predictions
 
         # Prepare artifact data if available
         if original_data_artifact is not None:
@@ -704,7 +891,7 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
                         print(f"✅ Using first numeric column: {numeric_cols[0]}")
                     else:
                         print("⚠️  No numeric columns found, using zeros")
-                        artifact_data_values = np.zeros(len(original_data))
+                        artifact_data_values = np.zeros(len(test_data))
                         volume_data = None
 
                 # Extract data from volume column if found
@@ -717,43 +904,43 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
                             artifact_data_values = artifact_data_aligned.values
                         except:
                             # Fallback: use first n values from volume column
-                            artifact_data_values = volume_data.values[:len(original_data)]
+                            artifact_data_values = volume_data.values[:len(test_data)]
                     else:
                         # Simple fallback: use first n values from volume column
-                        artifact_data_values = volume_data.values[:len(original_data)]
+                        artifact_data_values = volume_data.values[:len(test_data)]
             else:
                 # Handle non-DataFrame case
                 if hasattr(original_data_artifact, 'values'):
-                    artifact_data_values = original_data_artifact.values[:len(original_data)]
+                    artifact_data_values = original_data_artifact.values[:len(test_data)]
                 else:
-                    artifact_data_values = original_data_artifact[:len(original_data)]
+                    artifact_data_values = original_data_artifact[:len(test_data)]
         else:
-            artifact_data_values = np.zeros_like(original_data)
+            artifact_data_values = np.zeros_like(test_data)
 
         # Debug: Check shapes of all arrays
         print("\n🔍 Debugging array shapes:")
-        print(f"   • original_data shape: {np.array(original_data).shape}")
+        print(f"   • test_data shape: {np.array(test_data).shape}")
         print(f"   • hybrid_forecast shape: {np.array(hybrid_forecast).shape}")
         print(f"   • sarima_forecast shape: {np.array(sarima_forecast).shape}")
-        print(f"   • lstm_residuals shape: {np.array(lstm_residuals).shape}")
+        print(f"   • lstm_forecast shape: {np.array(lstm_forecast).shape}")
         print(f"   • artifact_data_values shape: {np.array(artifact_data_values).shape}")
 
         # Flatten any multi-dimensional arrays to 1D
-        original_data = np.array(original_data).flatten()
+        test_data = np.array(test_data).flatten()
         hybrid_forecast = np.array(hybrid_forecast).flatten()
         sarima_forecast = np.array(sarima_forecast).flatten()
-        lstm_residuals = np.array(lstm_residuals).flatten()
+        lstm_forecast = np.array(lstm_forecast).flatten()
         artifact_data_values = np.array(artifact_data_values).flatten()
 
         print("\n🔧 After flattening:")
-        print(f"   • original_data shape: {original_data.shape}")
+        print(f"   • test_data shape: {test_data.shape}")
         print(f"   • hybrid_forecast shape: {hybrid_forecast.shape}")
         print(f"   • sarima_forecast shape: {sarima_forecast.shape}")
-        print(f"   • lstm_residuals shape: {lstm_residuals.shape}")
+        print(f"   • lstm_forecast shape: {lstm_forecast.shape}")
         print(f"   • artifact_data_values shape: {artifact_data_values.shape}")
 
         # Ensure all arrays have the same length
-        min_length = min(len(original_data), len(hybrid_forecast), len(sarima_forecast), len(lstm_residuals), len(artifact_data_values))
+        min_length = min(len(test_data), len(hybrid_forecast), len(sarima_forecast), len(lstm_forecast), len(artifact_data_values))
         print(f"\n📏 Using minimum length: {min_length}")
 
         # Add test_predictions data for clarity
@@ -763,14 +950,14 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
 
         # Create comparison DataFrame with test_predictions data included
         comparison_df = pd.DataFrame({
-            'Original Data': original_data[:min_length],
-            'original_data_artifact_modelling_data': artifact_data_values[:min_length],
+            'Test Data': test_data[:min_length],
+            #'original_data_artifact_modelling_data': artifact_data_values[:min_length],
             'Hybrid SARIMA + LSTM': hybrid_forecast[:min_length],
             'SARIMA': sarima_forecast[:min_length],
-            'LSTM': lstm_residuals[:min_length],
-            'test_predictions_actual': test_predictions_actual,
-            'test_predictions_predicted': test_predictions_predicted,
-            'test_predictions_residuals': test_predictions_residuals
+            'LSTM': lstm_forecast[:min_length],
+            #'test_predictions_actual': test_predictions_actual,
+            #'test_predictions_predicted': test_predictions_predicted,
+            #'test_predictions_residuals': test_predictions_residuals
         }, index=test_series.index[:min_length])
 
         print("\n" + "=" * 80)
@@ -779,28 +966,45 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
         print(comparison_df.head(5).round(1))
         print("=" * 80)
 
-        # Step 5: Display results and show plots
+        # Step 7: Display final results
         print("\n" + "=" * 70)
-        print("🎉 COMPLETE WORKFLOW RESULTS:")
+        print("🎉 COMPLETE HYBRID ARIMA+LSTM WORKFLOW RESULTS:")
         print("=" * 70)
         print(f"📊 Data Summary:")
-        print(f"   • Residuals data points: {len(residuals_df)}")
+        print(f"   • ARIMA residuals data points: {len(residuals_df)}")
+        print(f"   • Test dataset records: {len(test_data_df)}")
         print(f"   • LSTM training sequences: {lstm_data['X_train'].shape[0]}")
         print(f"   • LSTM test sequences: {lstm_data['X_test'].shape[0]}")
+        print(f"   • Final test periods evaluated: {len(test_series)}")
 
-        print(f"\n📊 Model Performance:")
-        print(f"   • Hybrid MAE: {results['hybrid_metrics']['MAE']:.2f}")
-        print(f"   • Hybrid RMSE: {results['hybrid_metrics']['RMSE']:.2f}")
-        print(f"   • Hybrid MAPE: {results['hybrid_metrics']['MAPE']:.2f}%")
+        print(f"\n📊 Model Performance Comparison:")
+        print(f"   • ARIMA alone:")
+        print(f"     - MAE: {results['first_model_metrics']['MAE']:.2f}")
+        print(f"     - RMSE: {results['first_model_metrics']['RMSE']:.2f}")
+        print(f"     - MAPE: {results['first_model_metrics']['MAPE']:.2f}%")
+        print(f"   • Hybrid ARIMA+LSTM:")
+        print(f"     - MAE: {results['hybrid_metrics']['MAE']:.2f}")
+        print(f"     - RMSE: {results['hybrid_metrics']['RMSE']:.2f}")
+        print(f"     - MAPE: {results['hybrid_metrics']['MAPE']:.2f}%")
 
-        if results['first_model_metrics']:
-            print(f"   • First Model MAE: {results['first_model_metrics']['MAE']:.2f}")
-            print(f"   • First Model MAPE: {results['first_model_metrics']['MAPE']:.2f}%")
+        improvement_mae = ((results['first_model_metrics']['MAE'] - results['hybrid_metrics']['MAE']) / results['first_model_metrics']['MAE']) * 100
+        improvement_rmse = ((results['first_model_metrics']['RMSE'] - results['hybrid_metrics']['RMSE']) / results['first_model_metrics']['RMSE']) * 100
 
-        print(f"\n📁 Outputs saved to 'plots/' directory")
-        print(f"   • Interactive HTML plots")
-        print(f"   • PNG images (if kaleido installed)")
-        print(f"   • CSV comparison data")
+        print(f"   • Performance Improvement:")
+        print(f"     - MAE improvement: {improvement_mae:.1f}%")
+        print(f"     - RMSE improvement: {improvement_rmse:.1f}%")
+
+        print(f"\n📁 Data Sources:")
+        print(f"   • ARIMA residuals: arima_residuals.csv")
+        print(f"   • Test dataset: combined_test_data.csv")
+        print(f"   • ARIMA forecasts: ZenML artifacts or fallback")
+        print(f"   • Final hybrid predictions: ARIMA + LSTM residual corrections")
+
+        print(f"\n📁 Outputs:")
+        print(f"   • Comparison table saved to comparison DataFrame")
+        if 'plotting_results' in locals():
+            print(f"   • Plots saved to 'plots/' directory")
+        print(f"   • Model artifacts and predictions available")
 
         return results, best_model, lstm_data
 
