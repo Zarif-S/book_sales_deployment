@@ -55,14 +55,14 @@ def extract_objects(artefacts, book_name: str | None = None):
     # Find train_data and test_data DataFrames (separate artifacts now)
     train_df = None
     test_df = None
-    
+
     for d in artefacts.values():
         for name, obj in d.items():
             if "train_data" in name and isinstance(obj, pd.DataFrame):
                 train_df = obj
             elif "test_data" in name and isinstance(obj, pd.DataFrame):
                 test_df = obj
-    
+
     if train_df is None:
         raise RuntimeError("Could not locate 'train_data' artefact")
     if test_df is None:
@@ -75,16 +75,16 @@ def extract_objects(artefacts, book_name: str | None = None):
     # Filter by book and extract volume series
     book_train_df = train_df[train_df.book_name == book_name]
     book_test_df = test_df[test_df.book_name == book_name]
-    
+
     if book_train_df.empty:
         raise RuntimeError(f"No training data found for book: {book_name}")
     if book_test_df.empty:
         raise RuntimeError(f"No test data found for book: {book_name}")
-    
+
     # Create time series (data is already indexed by date from our pipeline)
     # If 'volume' column exists, use it; otherwise use 'Volume'
     volume_col = 'volume' if 'volume' in book_train_df.columns else 'Volume'
-    
+
     train = book_train_df[volume_col].sort_index()
     test = book_test_df[volume_col].sort_index()
 
@@ -98,7 +98,7 @@ def extract_objects(artefacts, book_name: str | None = None):
         else:
             continue
         break
-    
+
     if model is None:
         raise RuntimeError("Could not find a trained model artefact")
 
@@ -116,23 +116,23 @@ def load_arima_results_from_csv(csv_dir="arima_standalone_outputs"):
         forecast_comparison_path = os.path.join(csv_dir, "arima_forecast_comparison.csv")
         predictions_path = os.path.join(csv_dir, "arima_predictions.csv")
         residuals_path = os.path.join(csv_dir, "arima_residuals.csv")
-        
+
         if not os.path.exists(forecast_comparison_path):
             raise FileNotFoundError(f"ARIMA forecast comparison CSV not found: {forecast_comparison_path}")
-        
+
         forecast_df = pd.read_csv(forecast_comparison_path)
         predictions_df = pd.read_csv(predictions_path)
-        
+
         # Convert date columns
         forecast_df['date'] = pd.to_datetime(forecast_df['date'])
         predictions_df['date'] = pd.to_datetime(predictions_df['date'])
-        
+
         print(f"✅ Loaded ARIMA results from CSV files:")
         print(f"   • Forecast comparison: {forecast_df.shape}")
         print(f"   • Predictions: {predictions_df.shape}")
-        
+
         return forecast_df, predictions_df
-        
+
     except Exception as e:
         print(f"❌ Failed to load ARIMA CSV files: {e}")
         return None, None
@@ -141,7 +141,7 @@ def load_arima_results_from_csv(csv_dir="arima_standalone_outputs"):
 # 3.  Simple plot that uses the stored test-set predictions
 # ------------------------------------------------------------------ #
 
-def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_path="outputs"):
+def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_path="outputs/plots/interactive"):
     # load test_predictions DataFrame
     for d in artefacts.values():
         for name, obj in d.items():
@@ -184,7 +184,8 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
     print(f"MAPE: {mape:,.2f}%")
 
     # Save the plot
-    filename = "test_predictions.html"
+    os.makedirs(save_path, exist_ok=True)
+    filename = "arima_test_predictions.html"
     filepath = os.path.join(save_path, filename)
     fig.write_html(filepath)
     print(f"Plot saved to: {filepath}")
@@ -192,20 +193,20 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
     # fig.show()  # Commented out to prevent massive HTML output
     return fig
 
-def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs", 
+def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
                        title="ARIMA Standalone Forecast"):
     """Plot ARIMA results loaded from CSV files."""
     forecast_df, predictions_df = load_arima_results_from_csv(csv_dir)
-    
+
     if forecast_df is None or predictions_df is None:
         print("❌ Could not load ARIMA CSV data for plotting")
         return None
-    
+
     # Calculate metrics
     mae = forecast_df['absolute_error'].mean()
     mape = forecast_df['percentage_error'].mean()
     rmse = np.sqrt(forecast_df['squared_error'].mean())
-    
+
     # Load training data for context
     train_path = "data/processed/combined_train_data.csv"
     if os.path.exists(train_path):
@@ -217,10 +218,10 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
         # Create placeholder training data
         train_dates = pd.date_range('2020-01-01', periods=500, freq='W-SAT')
         train_volumes = [500] * len(train_dates)
-    
+
     # Create plot
     fig = go.Figure()
-    
+
     # Add training data
     fig.add_trace(go.Scatter(
         x=train_dates,
@@ -230,7 +231,7 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
         line=dict(color='blue', width=2),
         opacity=0.8
     ))
-    
+
     # Add actual test data
     fig.add_trace(go.Scatter(
         x=forecast_df['date'],
@@ -240,7 +241,7 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
         line=dict(color='black', width=3),
         marker=dict(size=5)
     ))
-    
+
     # Add ARIMA predictions
     fig.add_trace(go.Scatter(
         x=forecast_df['date'],
@@ -250,10 +251,10 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
         line=dict(color='red', width=2, dash='dash'),
         marker=dict(size=4)
     ))
-    
+
     # Update layout with metrics
     title_text = f'{title}<br><sub>MAE: {mae:.2f} | MAPE: {mape:.2f}% | RMSE: {rmse:.2f}</sub>'
-    
+
     fig.update_layout(
         title=title_text,
         xaxis_title="Date",
@@ -264,15 +265,15 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
         height=500,
         showlegend=True
     )
-    
+
     # Save files
     os.makedirs(save_path, exist_ok=True)
     html_filename = os.path.join(save_path, "arima_standalone_forecast.html")
     png_filename = os.path.join(save_path, "arima_standalone_forecast.png")
-    
+
     fig.write_html(html_filename)
     fig.write_image(png_filename)
-    
+
     print(f"📊 ARIMA CSV Results:")
     print(f"   • MAE: {mae:.2f}")
     print(f"   • MAPE: {mape:.2f}%")
@@ -280,7 +281,7 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
     print(f"📁 ARIMA plots saved:")
     print(f"   • HTML: {html_filename}")
     print(f"   • PNG: {png_filename}")
-    
+
     return fig, {"mae": mae, "mape": mape, "rmse": rmse}
 
 # ------------------------------------------------------------------ #
@@ -289,7 +290,7 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
 if __name__ == "__main__":
     PIPELINE_NAME = "book_sales_arima_pipeline"        # <- your pipeline
     BOOK          = None                               # or e.g. "The Alchemist"
-    PLOTS_FOLDER  = "outputs"                          # outputs folder
+    PLOTS_FOLDER  = "outputs/plots/interactive"        # interactive plots folder
     CSV_FOLDER    = "arima_standalone_outputs"         # CSV fallback folder
 
     # Ensure plots folder exists
@@ -303,7 +304,7 @@ if __name__ == "__main__":
     try:
         if os.path.exists(CSV_FOLDER):
             fig, metrics = plot_arima_from_csv(
-                csv_dir=CSV_FOLDER, 
+                csv_dir=CSV_FOLDER,
                 save_path=PLOTS_FOLDER,
                 title="ARIMA Standalone Forecast"
             )
@@ -315,13 +316,13 @@ if __name__ == "__main__":
             print(f"❌ CSV folder not found: {CSV_FOLDER}")
     except Exception as e:
         print(f"❌ Failed to plot from CSV: {e}")
-    
+
     # --------  Option 2: Fallback to ZenML artifacts  -------- #
     print("\n📋 Falling back to ZenML artifacts...")
     try:
         artefacts, run = load_latest_run_outputs(PIPELINE_NAME)
         print(f"✅ Loaded artefacts from run: {run.name}")
-        
+
         # List available artifacts for debugging
         list_available_artifacts(artefacts)
 
@@ -334,7 +335,7 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"❌ Error plotting test predictions: {e}")
             print("This might be due to changes in artifact structure.")
-            
+
         # --------  Option B: extract train/test data manually  -------- #
         try:
             print("\nExtracting train/test data from separate artifacts...")
@@ -346,9 +347,9 @@ if __name__ == "__main__":
         except Exception as e:
             print(f"Error extracting objects: {e}")
             print("Please check that the pipeline has been run with the updated structure.")
-            
+
     except Exception as e:
         print(f"❌ Failed to load ZenML artifacts: {e}")
         print("Please ensure the pipeline has been run or CSV files are available.")
-    
+
     print("\n" + "=" * 60)

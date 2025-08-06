@@ -3,7 +3,7 @@ import numpy as np
 import pickle
 import os
 import json
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, List
 from statsmodels.tsa.statespace.sarimax import SARIMAX
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 import optuna
@@ -11,10 +11,33 @@ import warnings
 
 warnings.filterwarnings('ignore')
 
-def load_pipeline_data():
-    """Load train and test data from pipeline CSV files for consistent comparison."""
-    print("📂 Loading pipeline train/test data from CSV files...")
+def load_individual_book_data(book_isbn: str):
+    """Load train and test data for a specific book from individual CSV files."""
+    print(f"📂 Loading individual book data for ISBN: {book_isbn}")
 
+    train_path = f"data/processed/train_data_{book_isbn}.csv"
+    test_path = f"data/processed/test_data_{book_isbn}.csv"
+
+    if not os.path.exists(train_path):
+        raise FileNotFoundError(f"Book train data not found: {train_path}")
+    if not os.path.exists(test_path):
+        raise FileNotFoundError(f"Book test data not found: {test_path}")
+
+    train_data = pd.read_csv(train_path, index_col=0, parse_dates=True)
+    test_data = pd.read_csv(test_path, index_col=0, parse_dates=True)
+
+    print(f"✅ Loaded train data: {train_data.shape}")
+    print(f"✅ Loaded test data: {test_data.shape}")
+    print(f"📊 Train columns: {list(train_data.columns)}")
+    print(f"📊 Test columns: {list(test_data.columns)}")
+
+    return train_data, test_data
+
+def load_pipeline_data():
+    """DEPRECATED: Use load_individual_book_data() instead for individual book modeling."""
+    print("⚠️  WARNING: load_pipeline_data() loads combined data which aggregates multiple books.")
+    print("⚠️  For individual book modeling, use load_individual_book_data(isbn) instead.")
+    
     train_path = "data/processed/combined_train_data.csv"
     test_path = "data/processed/combined_test_data.csv"
 
@@ -33,19 +56,36 @@ def load_pipeline_data():
 
     return train_data, test_data
 
-def create_time_series_from_df(df: pd.DataFrame, target_col: str = "volume",
-                              date_col: str = "date") -> pd.Series:
+def create_time_series_from_df(df: pd.DataFrame, target_col: str = "Volume") -> pd.Series:
     """
     Convert DataFrame to time series for ARIMA modeling.
-    Assumes data is already filtered and prepared from your prep step.
+    For individual book data, assumes the index is already a datetime index.
     """
     df_work = df.copy()
-    if not pd.api.types.is_datetime64_any_dtype(df_work[date_col]):
-        df_work[date_col] = pd.to_datetime(df_work[date_col])
-
-    df_work = df_work.sort_values(date_col)
-    time_series = df_work.groupby(date_col)[target_col].sum()
-
+    
+    # Check if target column exists
+    if target_col not in df_work.columns:
+        available_cols = list(df_work.columns)
+        raise ValueError(f"Column '{target_col}' not found. Available columns: {available_cols}")
+    
+    # If index is not datetime, try to convert it
+    if not pd.api.types.is_datetime64_any_dtype(df_work.index):
+        try:
+            df_work.index = pd.to_datetime(df_work.index)
+        except Exception as e:
+            raise ValueError(f"Could not convert index to datetime: {e}")
+    
+    # Sort by index (date) to ensure chronological order
+    df_work = df_work.sort_index()
+    
+    # For individual book data, we can directly use the target column as time series
+    # No need to group by date since each row should be one time period
+    time_series = df_work[target_col]
+    
+    print(f"📈 Created time series with {len(time_series)} data points")
+    print(f"📅 Date range: {time_series.index.min()} to {time_series.index.max()}")
+    print(f"📊 Volume range: {time_series.min()} to {time_series.max()}")
+    
     return time_series
 
 def split_time_series(series: pd.Series, test_size: int = 32) -> tuple:
@@ -219,6 +259,157 @@ def parse_hyperparameters_json(json_string: str) -> Dict[str, Any]:
     return json.loads(json_string)
 
 
+def train_individual_book_arima(book_isbn: str, output_dir: str = "outputs/arima", 
+                               n_trials: int = 50) -> Dict[str, Any]:
+    """
+    Train ARIMA model for a single book using individual book files.
+    
+    Args:
+        book_isbn: ISBN of the book to train model for
+        output_dir: Directory to save model artifacts
+        n_trials: Number of Optuna trials for hyperparameter optimization
+        
+    Returns:
+        Dictionary with model results and metrics
+    """
+    print(f"🚀 Training individual ARIMA model for book ISBN: {book_isbn}")
+    
+    try:
+        # Load individual book data
+        train_data, test_data = load_individual_book_data(book_isbn)
+        
+        # Convert to time series
+        train_series = create_time_series_from_df(train_data, target_col="Volume")
+        test_series = create_time_series_from_df(test_data, target_col="Volume")
+        
+        print(f"📊 Training series: {len(train_series)} points")
+        print(f"📊 Test series: {len(test_series)} points")
+        
+        # Run Optuna optimization
+        study_name = f"arima_{book_isbn}"
+        optimization_results = run_optuna_optimization_with_early_stopping(
+            train_series, test_series, n_trials, study_name,
+            patience=5, min_improvement=0.1, min_trials=15
+        )
+        
+        best_params = optimization_results["best_params"]
+        print(f"🎯 Best parameters for {book_isbn}: {best_params}")
+        
+        # Train final model
+        final_model = train_final_arima_model(train_series, best_params)
+        
+        # Make predictions
+        forecast = final_model.forecast(steps=len(test_series))
+        eval_metrics = evaluate_forecast(test_series.values, forecast.values)
+        
+        print(f"📈 Evaluation metrics for {book_isbn}:")
+        for metric, value in eval_metrics.items():
+            print(f"   {metric.upper()}: {value:.4f}")
+        
+        # Save model artifacts
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Save model
+        model_path = os.path.join(output_dir, f"arima_model_{book_isbn}.pkl")
+        with open(model_path, 'wb') as f:
+            pickle.dump(final_model, f)
+        
+        # Save predictions
+        predictions_df = pd.DataFrame({
+            'actual': test_series.values,
+            'predicted': forecast.values,
+            'date': test_series.index
+        })
+        predictions_path = os.path.join(output_dir, f"predictions_{book_isbn}.csv")
+        predictions_df.to_csv(predictions_path, index=False)
+        
+        # Save hyperparameters and metrics
+        results = {
+            "book_isbn": book_isbn,
+            "best_params": best_params,
+            "optimization_results": optimization_results,
+            "evaluation_metrics": eval_metrics,
+            "model_path": model_path,
+            "predictions_path": predictions_path,
+            "train_series_length": len(train_series),
+            "test_series_length": len(test_series),
+            "training_date_range": f"{train_series.index.min()} to {train_series.index.max()}",
+            "test_date_range": f"{test_series.index.min()} to {test_series.index.max()}"
+        }
+        
+        results_path = os.path.join(output_dir, f"results_{book_isbn}.json")
+        with open(results_path, 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        
+        print(f"✅ Successfully trained ARIMA model for {book_isbn}")
+        print(f"📁 Artifacts saved to: {output_dir}")
+        
+        return results
+        
+    except Exception as e:
+        print(f"❌ Failed to train ARIMA model for {book_isbn}: {e}")
+        return {
+            "book_isbn": book_isbn,
+            "error": str(e),
+            "success": False
+        }
+
+
+def train_multiple_books_arima(book_isbns: List[str], output_dir: str = "outputs/arima",
+                             n_trials: int = 50) -> Dict[str, Any]:
+    """
+    Train individual ARIMA models for multiple books.
+    
+    Args:
+        book_isbns: List of ISBNs to train models for
+        output_dir: Directory to save model artifacts
+        n_trials: Number of Optuna trials per book
+        
+    Returns:
+        Dictionary with results for each book
+    """
+    print(f"🚀 Training ARIMA models for {len(book_isbns)} books")
+    
+    results = {}
+    successful_models = 0
+    
+    for i, isbn in enumerate(book_isbns, 1):
+        print(f"\n{'='*60}")
+        print(f"📖 Processing book {i}/{len(book_isbns)}: {isbn}")
+        print(f"{'='*60}")
+        
+        book_results = train_individual_book_arima(isbn, output_dir, n_trials)
+        results[isbn] = book_results
+        
+        if book_results.get("success", True):  # Default to True if not specified
+            successful_models += 1
+    
+    # Summary
+    print(f"\n{'='*60}")
+    print(f"📊 TRAINING SUMMARY")
+    print(f"{'='*60}")
+    print(f"✅ Successfully trained: {successful_models}/{len(book_isbns)} models")
+    print(f"❌ Failed: {len(book_isbns) - successful_models}/{len(book_isbns)} models")
+    
+    # Save overall summary
+    summary = {
+        "total_books": len(book_isbns),
+        "successful_models": successful_models,
+        "failed_models": len(book_isbns) - successful_models,
+        "book_results": results,
+        "training_timestamp": pd.Timestamp.now().isoformat()
+    }
+    
+    summary_path = os.path.join(output_dir, "training_summary.json")
+    os.makedirs(output_dir, exist_ok=True)
+    with open(summary_path, 'w') as f:
+        json.dump(summary, f, indent=2, default=str)
+    
+    print(f"📁 Overall summary saved to: {summary_path}")
+    
+    return summary
+
+
 def train_arima_step(train_data, test_data, output_dir, n_trials=50,
                      study_name="arima_optimization"):
     """
@@ -327,20 +518,13 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
             "model_signature": hyperparameters_dict["model_signature"]
         })
 
-        test_predictions_df = pd.DataFrame({
+        # Create forecast DataFrame (consolidating test_predictions and forecast_comparison)
+        forecast_df = pd.DataFrame({
+            "period": range(1, len(test_series) + 1),
             "date": test_series.index,
             "actual": test_series.values,
             "predicted": forecast.values,
             "residuals": test_series.values - forecast.values,
-            "absolute_error": np.abs(test_series.values - forecast.values),
-            "model_signature": hyperparameters_dict["model_signature"]
-        })
-
-        forecast_comparison_df = pd.DataFrame({
-            "period": range(1, len(test_series) + 1),
-            "date": test_series.index,
-            "actual_volume": test_series.values,
-            "predicted_volume": forecast.values,
             "absolute_error": np.abs(test_series.values - forecast.values),
             "percentage_error": np.abs((test_series.values - forecast.values) / test_series.values) * 100,
             "squared_error": (test_series.values - forecast.values) ** 2,
@@ -348,7 +532,7 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
         })
 
         return (results_df, best_hyperparameters_json, final_model,
-                residuals_df, test_predictions_df, forecast_comparison_df)
+                residuals_df, forecast_df)
 
     except Exception as e:
         print(f"ARIMA training failed: {str(e)}")
@@ -381,28 +565,20 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
             "model_signature": "ERROR_ARIMA_MODEL"
         })
 
-        error_test_predictions_df = pd.DataFrame({
+        error_forecast_df = pd.DataFrame({
+            "period": [],
             "date": pd.to_datetime([]),
             "actual": [],
             "predicted": [],
             "residuals": [],
             "absolute_error": [],
-            "model_signature": "ERROR_ARIMA_MODEL"
-        })
-
-        error_forecast_comparison_df = pd.DataFrame({
-            "period": [],
-            "date": pd.to_datetime([]),
-            "actual_volume": [],
-            "predicted_volume": [],
-            "absolute_error": [],
             "percentage_error": [],
             "squared_error": [],
-            "model_signature": "ERROR_ARIMA_MODEL"
+            "model_signature": []
         })
 
         return (error_df, error_hyperparameters_json, None,
-                error_residuals_df, error_test_predictions_df, error_forecast_comparison_df)
+                error_residuals_df, error_forecast_df)
 
 
 if __name__ == "__main__":
@@ -433,7 +609,7 @@ if __name__ == "__main__":
             study_name="standalone_arima_optimization"
         )
 
-        results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
+        results_df, hyperparameters_json, model, residuals_df, forecast_df = results
 
         print("\n✅ ARIMA standalone training completed successfully!")
         print("=" * 60)
@@ -461,10 +637,9 @@ if __name__ == "__main__":
         os.makedirs(predictions_dir, exist_ok=True)
         os.makedirs(comparisons_dir, exist_ok=True)
 
-        # Save results to organized CSV locations
+        # Save results to organized CSV locations (enhanced forecast comparison includes all metrics)
         forecast_comparison_df.to_csv(f"{comparisons_dir}/arima_forecast_comparison.csv", index=False)
         residuals_df.to_csv(f"{residuals_dir}/arima_residuals.csv", index=False)
-        test_predictions_df.to_csv(f"{predictions_dir}/arima_predictions.csv", index=False)
 
         # Add plotting functionality
         print(f"\n📋 Creating ARIMA forecast plots...")

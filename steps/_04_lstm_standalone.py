@@ -895,20 +895,13 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
             "model_signature": hyperparameters_dict["model_signature"]
         })
 
-        test_predictions_df = pd.DataFrame({
+        # Create forecast DataFrame (consolidating test_predictions and forecast_comparison)
+        forecast_df = pd.DataFrame({
+            "period": range(1, len(test_actual) + 1),
             "date": lstm_data['original_df'].index[len(lstm_data['train_volume']):len(lstm_data['train_volume']) + len(test_pred)],
             "actual": test_actual,
             "predicted": test_pred,
             "residuals": test_actual - test_pred,
-            "absolute_error": np.abs(test_actual - test_pred),
-            "model_signature": hyperparameters_dict["model_signature"]
-        })
-
-        forecast_comparison_df = pd.DataFrame({
-            "period": range(1, len(test_actual) + 1),
-            "date": lstm_data['original_df'].index[len(lstm_data['train_volume']):len(lstm_data['train_volume']) + len(test_pred)],
-            "actual_volume": test_actual,
-            "predicted_volume": test_pred,
             "absolute_error": np.abs(test_actual - test_pred),
             "percentage_error": np.abs((test_actual - test_pred) / test_actual) * 100,
             "squared_error": (test_actual - test_pred) ** 2,
@@ -916,7 +909,7 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
         })
 
         return (results_df, best_hyperparameters_json, final_model,
-                residuals_df, test_predictions_df, forecast_comparison_df)
+                residuals_df, forecast_df)
 
     except Exception as e:
         print(f"LSTM training failed: {str(e)}")
@@ -950,28 +943,20 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
             "model_signature": "ERROR_LSTM_MODEL"
         })
 
-        error_test_predictions_df = pd.DataFrame({
+        error_forecast_df = pd.DataFrame({
+            "period": [],
             "date": pd.to_datetime([]),
             "actual": [],
             "predicted": [],
             "residuals": [],
             "absolute_error": [],
-            "model_signature": "ERROR_LSTM_MODEL"
-        })
-
-        error_forecast_comparison_df = pd.DataFrame({
-            "period": [],
-            "date": pd.to_datetime([]),
-            "actual_volume": [],
-            "predicted_volume": [],
-            "absolute_error": [],
             "percentage_error": [],
             "squared_error": [],
-            "model_signature": "ERROR_LSTM_MODEL"
+            "model_signature": []
         })
 
         return (error_df, error_hyperparameters_json, None,
-                error_residuals_df, error_test_predictions_df, error_forecast_comparison_df)
+                error_residuals_df, error_forecast_df)
 
 
 if __name__ == "__main__":
@@ -1004,7 +989,7 @@ if __name__ == "__main__":
             study_name="standalone_lstm_optimization"
         )
 
-        results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
+        results_df, hyperparameters_json, model, residuals_df, forecast_df = results
 
         print("\n✅ LSTM standalone training completed successfully!")
         print("=" * 60)
@@ -1032,9 +1017,8 @@ if __name__ == "__main__":
         os.makedirs(predictions_dir, exist_ok=True)
         os.makedirs(comparisons_dir, exist_ok=True)
 
-        # Save results to organized CSV locations
+        # Save results to organized CSV locations (enhanced forecast comparison includes all metrics)
         forecast_comparison_df.to_csv(f"{comparisons_dir}/lstm_forecast_comparison.csv", index=False)
-        test_predictions_df.to_csv(f"{predictions_dir}/lstm_predictions.csv", index=False)
 
         # Add plotting functionality
         print(f"\n📋 Creating LSTM forecast plots...")
