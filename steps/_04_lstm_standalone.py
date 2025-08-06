@@ -13,23 +13,23 @@ warnings.filterwarnings('ignore')
 def load_pipeline_data():
     """Load train and test data from pipeline CSV files for consistent comparison."""
     print("📂 Loading pipeline train/test data from CSV files...")
-    
+
     train_path = "data/processed/combined_train_data.csv"
     test_path = "data/processed/combined_test_data.csv"
-    
+
     if not os.path.exists(train_path):
         raise FileNotFoundError(f"Pipeline train data not found: {train_path}")
     if not os.path.exists(test_path):
         raise FileNotFoundError(f"Pipeline test data not found: {test_path}")
-    
+
     train_data = pd.read_csv(train_path)
     test_data = pd.read_csv(test_path)
-    
+
     print(f"✅ Loaded train data: {train_data.shape}")
     print(f"✅ Loaded test data: {test_data.shape}")
     print(f"📊 Train columns: {list(train_data.columns)}")
     print(f"📊 Test columns: {list(test_data.columns)}")
-    
+
     return train_data, test_data
 
 
@@ -72,14 +72,14 @@ def load_original_data_from_csv(data_dir: str = "data/processed") -> pd.DataFram
         print(f"✅ Loaded original data from CSV: {original_csv_path}")
         print(f"📈 Original data shape: {original_df.shape}")
         print(f"📅 Date range: {original_df.index.min()} to {original_df.index.max()}")
-        
+
         # Check for volume column
         volume_col = None
         for col in ['Volume', 'volume', 'sales', 'Sales']:
             if col in original_df.columns:
                 volume_col = col
                 break
-        
+
         if volume_col:
             print(f"📊 Using volume column: {volume_col}")
             print(f"📊 Volume stats - Mean: {original_df[volume_col].mean():.4f}, Std: {original_df[volume_col].std():.4f}")
@@ -156,7 +156,7 @@ def prepare_original_data_for_lstm_training(
         if col in original_df.columns:
             volume_col = col
             break
-    
+
     if not volume_col:
         raise ValueError("No volume column found in data")
 
@@ -308,7 +308,7 @@ def create_lstm_model(lookback: int, forecast_horizon: int, trial: optuna.Trial 
     from tensorflow.keras.layers import Input, LSTM, Dense, Dropout
     from tensorflow.keras.callbacks import EarlyStopping, ReduceLROnPlateau
     from tensorflow import keras
-    
+
     if trial is not None:
         # Hyperparameter optimization
         input_units = trial.suggest_int('input_units', 16, 128, step=16)
@@ -326,10 +326,10 @@ def create_lstm_model(lookback: int, forecast_horizon: int, trial: optuna.Trial 
 
     model = Sequential()
     model.add(Input(shape=(lookback, 1)))
-    
+
     # First LSTM layer
     model.add(LSTM(input_units, return_sequences=(n_layers > 1)))
-    
+
     # Additional LSTM layers
     for i in range(n_layers - 1):
         if i == n_layers - 2:  # Last hidden layer
@@ -337,14 +337,14 @@ def create_lstm_model(lookback: int, forecast_horizon: int, trial: optuna.Trial 
         else:
             layer_units = trial.suggest_int(f'lstm_{i}_units', 16, 128, step=16) if trial else 64
             model.add(LSTM(layer_units, return_sequences=True))
-    
+
     model.add(Dropout(dropout_rate))
     model.add(Dense(forecast_horizon))
 
     # Compile model
     optimizer = keras.optimizers.Adam(learning_rate=learning_rate)
     model.compile(loss='mse', optimizer=optimizer, metrics=['mae'])
-    
+
     return model
 
 
@@ -355,12 +355,12 @@ def objective_lstm(trial, volume_data: np.ndarray, forecast_horizon: int) -> flo
         max_lookback = min(52, len(volume_data) // 3)  # Use 1/3 of data max
         min_lookback = min(6, max_lookback // 4)
         lookback = trial.suggest_int('lookback', min_lookback, max_lookback, step=2)
-        
+
         # Create sequences with tuned lookback
         sequences = create_input_sequences(lookback, forecast_horizon, volume_data)
         if len(sequences["input_sequences"]) < 10:  # Need minimum sequences
             return float("inf")
-            
+
         X_combined = np.array(sequences["input_sequences"])
         Y_combined = np.array(sequences["output_sequences"])
         X_combined = X_combined.reshape(X_combined.shape[0], X_combined.shape[1], 1)
@@ -368,22 +368,22 @@ def objective_lstm(trial, volume_data: np.ndarray, forecast_horizon: int) -> flo
         # Split data for training/validation
         train_size = int(0.7 * len(X_combined))
         val_size = int(0.15 * len(X_combined))
-        
+
         X_train = X_combined[:train_size]
         Y_train = Y_combined[:train_size]
         X_val = X_combined[train_size:train_size + val_size]
         Y_val = Y_combined[train_size:train_size + val_size]
-        
+
         if len(X_val) == 0:
             return float("inf")
-        
+
         # Create model with trial hyperparameters
         model = create_lstm_model(lookback, forecast_horizon, trial)
-        
+
         # Callbacks
         early_stopping = EarlyStopping(monitor='val_loss', patience=8, restore_best_weights=True)
         reduce_lr = ReduceLROnPlateau(monitor='val_loss', factor=0.5, patience=5, min_lr=1e-6)
-        
+
         # Train model
         model.fit(
             X_train, Y_train,
@@ -393,14 +393,14 @@ def objective_lstm(trial, volume_data: np.ndarray, forecast_horizon: int) -> flo
             callbacks=[early_stopping, reduce_lr],
             verbose=0
         )
-        
+
         # Evaluate on validation set
         val_pred = model.predict(X_val, verbose=0)
         from sklearn.metrics import mean_squared_error
         val_loss = mean_squared_error(Y_val.flatten(), val_pred.flatten())
-        
+
         return val_loss
-        
+
     except Exception as e:
         print(f"Trial failed: {e}")
         return float("inf")
@@ -410,7 +410,7 @@ def run_optuna_optimization_lstm(volume_data: np.ndarray, forecast_horizon: int,
                                 n_trials: int, study_name: str = "lstm_optimization") -> Dict[str, Any]:
     """Run Optuna hyperparameter optimization for LSTM with persistent storage."""
     print(f"Starting LSTM Optuna optimization with {n_trials} trials...")
-    
+
     # Set up Optuna storage (same as ARIMA and CNN)
     storage_dir = os.path.expanduser("~/zenml_optuna_storage")
     os.makedirs(storage_dir, exist_ok=True)
@@ -515,7 +515,7 @@ def train_lstm_with_optuna(
 
     # Train final model with best parameters
     best_lookback = best_params['lookback']
-    
+
     # Create sequences with best lookback
     sequences = create_input_sequences(best_lookback, forecast_horizon, volume_data)
     X_combined = np.array(sequences["input_sequences"])
@@ -531,18 +531,18 @@ def train_lstm_with_optuna(
     # Create and train final model
     print("📊 Training final LSTM model with best parameters...")
     final_model = create_lstm_model(best_lookback, forecast_horizon)
-    
+
     # Set the best hyperparameters manually
     final_model = create_lstm_model(best_lookback, forecast_horizon, None)  # Use defaults, then compile with best params
-    
+
     # Recompile with best learning rate
     optimizer = keras.optimizers.Adam(learning_rate=best_params['learning_rate'])
     final_model.compile(loss='mse', optimizer=optimizer, metrics=['mae'])
-    
+
     # Callbacks
     early_stopping = keras.callbacks.EarlyStopping(monitor='loss', patience=15, restore_best_weights=True)
     reduce_lr = keras.callbacks.ReduceLROnPlateau(monitor='loss', factor=0.5, patience=10, min_lr=1e-7)
-    
+
     # Train final model
     history = final_model.fit(
         X_train_final, Y_train_final,
@@ -588,11 +588,11 @@ def complete_lstm_original_data_workflow():
 
         # Prepare data for LSTM training
         print("📋 Preparing data for LSTM training...")
-        
+
         # Calculate appropriate parameters based on data size
         total_data_points = len(original_df)
         print(f"📊 Total data points available: {total_data_points}")
-        
+
         # Adjust parameters to ensure we have enough data for sequences
         if total_data_points < 50:
             # For small datasets, use smaller lookback and forecast
@@ -604,7 +604,7 @@ def complete_lstm_original_data_workflow():
             lookback = 21
             forecast = 32
             train_split_ratio = 0.8
-        
+
         lstm_data = prepare_original_data_for_lstm_training(
             original_df,
             lookback=lookback,
@@ -706,7 +706,7 @@ def complete_lstm_original_data_workflow():
 
         try:
             from utils.hybrid_plotting import comprehensive_model_evaluation
-            
+
             # Ensure outputs directory exists
             import os
             project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -805,17 +805,17 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
 
         # Prepare data for LSTM
         combined_data = pd.concat([train_data, test_data]).reset_index(drop=True)
-        
+
         # Create volume series
         if 'date' not in combined_data.columns:
             if "End Date" in combined_data.columns:
                 combined_data['date'] = pd.to_datetime(combined_data['End Date'])
             else:
                 combined_data['date'] = pd.date_range('2020-01-01', periods=len(combined_data), freq='D')
-        
+
         combined_data['date'] = pd.to_datetime(combined_data['date'])
         combined_data = combined_data.sort_values('date')
-        
+
         # Prepare for LSTM training
         lstm_data = prepare_original_data_for_lstm_training(
             combined_data.set_index('date'),
@@ -851,7 +851,7 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
         # Model configuration
         results_data.append({
             "result_type": "model_config",
-            "component": "architecture", 
+            "component": "architecture",
             "parameter": "lstm_lookback",
             "value": str(best_params["lookback"]),
             "timestamp": pd.Timestamp.now(),
@@ -935,7 +935,7 @@ def train_lstm_step(train_data, test_data, output_dir, n_trials=50,
 
         error_hyperparameters_dict = {
             "error": str(e),
-            "best_params": {"lookback": 21, "input_units": 64, "n_layers": 2, 
+            "best_params": {"lookback": 21, "input_units": 64, "n_layers": 2,
                            "final_units": 32, "dropout_rate": 0.3, "learning_rate": 0.001},
             "study_name": study_name,
             "model_signature": "ERROR_LSTM_MODEL"
@@ -980,19 +980,19 @@ if __name__ == "__main__":
     """
     print("🚀 Running LSTM standalone training with pipeline data...")
     print("=" * 60)
-    
+
     try:
         # Load pipeline data
         train_data, test_data = load_pipeline_data()
-        
+
         # Create output directory - use centralized outputs directory
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_dir = os.path.join(project_root, "outputs")
         os.makedirs(output_dir, exist_ok=True)
-        
+
         print(f"\n🔧 Running LSTM training...")
         print("=" * 60)
-        
+
         # Run LSTM training
         results = train_lstm_step(
             train_data=train_data,
@@ -1003,17 +1003,17 @@ if __name__ == "__main__":
             forecast_horizon=32,
             study_name="standalone_lstm_optimization"
         )
-        
+
         results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
-        
+
         print("\n✅ LSTM standalone training completed successfully!")
         print("=" * 60)
-        
+
         # Extract metrics from hyperparameters
         hyperparams = json.loads(hyperparameters_json)
         eval_metrics = hyperparams.get('eval_metrics', {})
         best_params = hyperparams.get('best_params', {})
-        
+
         print(f"\n📊 LSTM Results Summary:")
         print(f"• Model signature: {hyperparams.get('model_signature', 'LSTM_Model')}")
         print(f"• Best parameters: {best_params}")
@@ -1022,36 +1022,36 @@ if __name__ == "__main__":
         print(f"• Test MAE: {eval_metrics.get('mae', 0):.2f}")
         print(f"• Test RMSE: {eval_metrics.get('rmse', 0):.2f}")
         print(f"• Test MAPE: {eval_metrics.get('mape', 0):.2f}%")
-        
+
         # Create organized subdirectories for outputs
         residuals_dir = os.path.join(output_dir, "data", "residuals")
         predictions_dir = os.path.join(output_dir, "data", "predictions")
         comparisons_dir = os.path.join(output_dir, "data", "comparisons")
-        
+
         os.makedirs(residuals_dir, exist_ok=True)
         os.makedirs(predictions_dir, exist_ok=True)
         os.makedirs(comparisons_dir, exist_ok=True)
-        
+
         # Save results to organized CSV locations
         forecast_comparison_df.to_csv(f"{comparisons_dir}/lstm_forecast_comparison.csv", index=False)
         test_predictions_df.to_csv(f"{predictions_dir}/lstm_predictions.csv", index=False)
-        
+
         # Add plotting functionality
         print(f"\n📋 Creating LSTM forecast plots...")
         try:
             # Create standalone LSTM plotting function
-            def create_lstm_standalone_plot(series_train, series_test, lstm_predictions, 
+            def create_lstm_standalone_plot(series_train, series_test, lstm_predictions,
                                          eval_metrics, best_params, output_dir):
                 """Create standalone LSTM forecast plot."""
                 import plotly.graph_objects as go
                 import os
-                
+
                 # Create model signature for LSTM
                 model_signature = f"LSTM_lookback{best_params['lookback']}_units{best_params['input_units']}"
-                
+
                 # Create the main plot
                 fig = go.Figure()
-                
+
                 # Add training data
                 fig.add_trace(go.Scatter(
                     x=series_train.index,
@@ -1061,7 +1061,7 @@ if __name__ == "__main__":
                     line=dict(color='blue', width=2),
                     opacity=0.8
                 ))
-                
+
                 # Add actual test data
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -1071,7 +1071,7 @@ if __name__ == "__main__":
                     line=dict(color='black', width=3),
                     marker=dict(size=5)
                 ))
-                
+
                 # Add LSTM predictions
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -1081,10 +1081,10 @@ if __name__ == "__main__":
                     line=dict(color='red', width=2, dash='dash'),
                     marker=dict(size=4)
                 ))
-                
+
                 # Update layout
                 title_text = f'LSTM Book Sales Forecast<br><sub>MAE: {eval_metrics["mae"]:.2f} | MAPE: {eval_metrics["mape"]:.2f}% | RMSE: {eval_metrics["rmse"]:.2f}</sub>'
-                
+
                 fig.update_layout(
                     title=title_text,
                     xaxis_title="Date",
@@ -1094,36 +1094,36 @@ if __name__ == "__main__":
                     height=500,
                     showlegend=True
                 )
-                
+
                 # Save plots - create necessary directories
                 os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
                 os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
-                
+
                 # Create descriptive file names with proper folder structure
                 html_filename = f"{output_dir}/plots/interactive/lstm_standalone_forecast.html"
                 png_filename = f"{output_dir}/plots/static/lstm_standalone_forecast.png"
-                
+
                 # Save files
                 fig.write_html(html_filename)
                 fig.write_image(png_filename, width=1200, height=500)
-                
+
                 print(f"📁 LSTM standalone plots saved to: {output_dir}")
                 print(f"   • HTML: {html_filename}")
                 print(f"   • PNG: {png_filename}")
-                
+
                 return {
                     'figure': fig,
                     'model_signature': model_signature,
                     'metrics': eval_metrics
                 }
-            
+
             # Prepare data for plotting
             # Create date series based on test data
             if "End Date" in test_data.columns:
                 test_dates = pd.to_datetime(test_data["End Date"])
             else:
                 test_dates = pd.date_range('2023-12-16', periods=len(test_predictions_df), freq='W-SAT')
-                
+
             if "End Date" in train_data.columns:
                 # Use actual train dates
                 train_dates = pd.to_datetime(train_data["End Date"])
@@ -1132,11 +1132,11 @@ if __name__ == "__main__":
                 # Create synthetic train dates
                 train_dates = pd.date_range('2020-01-01', periods=len(train_data), freq='W-SAT')
                 train_values = train_data["Volume"].values if "Volume" in train_data.columns else train_data["volume"].values
-            
+
             # Create series for plotting
             train_series = pd.Series(train_values, index=train_dates, name='Volume')
             test_series = pd.Series(test_predictions_df['actual'].values, index=test_dates[:len(test_predictions_df)], name='Volume')
-            
+
             # Create standalone LSTM plot
             plotting_results = create_lstm_standalone_plot(
                 series_train=train_series,
@@ -1146,9 +1146,9 @@ if __name__ == "__main__":
                 best_params=best_params,
                 output_dir=output_dir
             )
-            
+
             print("✅ LSTM standalone plotting completed!")
-            
+
         except ImportError as e:
             print(f"⚠️  Plotting module not available: {e}")
             print("📊 Continuing without plots...")
@@ -1157,17 +1157,17 @@ if __name__ == "__main__":
             print("📊 Continuing without plots...")
             import traceback
             traceback.print_exc()
-        
+
         print(f"\n📁 Generated files in '{output_dir}/':")
         for file in os.listdir(output_dir):
             print(f"  • {file}")
-        
+
         print(f"\n🎉 LSTM standalone execution completed successfully!")
         print(f"📁 Check the '{output_dir}' directory for generated plots and data files.")
-        
+
     except Exception as e:
         print(f"\n❌ LSTM standalone training failed: {str(e)}")
         import traceback
         traceback.print_exc()
-        
-    print("\n" + "=" * 60) 
+
+    print("\n" + "=" * 60)

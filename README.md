@@ -29,7 +29,7 @@ book_sales_deployment/
 │   └── _05_lstm_*_residuals.py # Hybrid modeling approaches
 │
 ├── pipelines/                  # ZenML pipeline definitions
-│   ├── zenml_pipeline_arima_lstm.py
+│   ├── zenml_pipeline_arima.py      # Production ARIMA pipeline
 │   ├── zenml_pipeline_cnn_lstm.py
 │   └── zenml_pipeline.py
 │
@@ -94,8 +94,8 @@ poetry run python -m steps._04_lstm_standalone
 ### 4. Run Complete Pipeline
 
 ```bash
-# ARIMA + LSTM hybrid pipeline
-poetry run python pipelines/zenml_pipeline_arima_lstm.py
+# Production ARIMA pipeline (recommended)
+poetry run python pipelines/zenml_pipeline_arima.py
 
 # CNN + LSTM hybrid pipeline  
 poetry run python pipelines/zenml_pipeline_cnn_lstm.py
@@ -254,8 +254,10 @@ poetry run python -m steps._04_arima_standalone
 poetry run python -m steps._04_cnn_standalone
 poetry run python -m steps._04_lstm_standalone
 
+# Production ARIMA pipeline
+poetry run python pipelines/zenml_pipeline_arima.py
+
 # Hybrid pipelines
-poetry run python pipelines/zenml_pipeline_arima_lstm.py
 ```
 
 For detailed API documentation and guides, see the `docs/` directory.

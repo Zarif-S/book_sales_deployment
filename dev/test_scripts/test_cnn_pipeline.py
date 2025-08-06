@@ -131,7 +131,7 @@ if __name__ == "__main__":
         print(f"\n📋 To run the pipeline:")
         print(f"   python pipelines/zenml_pipeline_cnn_lstm.py")
         print(f"\n📋 Expected outputs:")
-        print(f"   • CNN residuals saved to: data/processed/cnn_residuals.csv")
+        print(f"   • CNN residuals saved to: outputs/data/residuals/cnn_residuals.csv")
         print(f"   • CNN model artifacts in ZenML")
         print(f"   • Ready for LSTM step integration")
     else:

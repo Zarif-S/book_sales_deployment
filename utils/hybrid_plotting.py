@@ -479,12 +479,13 @@ def comprehensive_model_evaluation(
         import os
         os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
         os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
+        os.makedirs(f"{output_dir}/data/comparisons", exist_ok=True)
         
         # Create descriptive file names based on model signature
         safe_model_name = model_signature.replace(" ", "_").replace("+", "_plus_").replace("(", "").replace(")", "").replace("-", "_")
         html_filename = f"{output_dir}/plots/interactive/{safe_model_name}_forecast_comparison.html"
         png_filename = f"{output_dir}/plots/static/{safe_model_name}_forecast_comparison.png"
-        csv_filename = f"{output_dir}/{safe_model_name}_comparison_data.csv"
+        csv_filename = f"{output_dir}/data/comparisons/{safe_model_name}_comparison_data.csv"
         
         fig_main.write_html(html_filename)
         fig_main.write_image(png_filename, width=1200, height=500)

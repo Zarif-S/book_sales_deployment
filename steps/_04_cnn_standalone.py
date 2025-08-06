@@ -18,23 +18,23 @@ warnings.filterwarnings('ignore')
 def load_pipeline_data():
     """Load train and test data from pipeline CSV files for consistent comparison."""
     print("📂 Loading pipeline train/test data from CSV files...")
-    
+
     train_path = "data/processed/combined_train_data.csv"
     test_path = "data/processed/combined_test_data.csv"
-    
+
     if not os.path.exists(train_path):
         raise FileNotFoundError(f"Pipeline train data not found: {train_path}")
     if not os.path.exists(test_path):
         raise FileNotFoundError(f"Pipeline test data not found: {test_path}")
-    
+
     train_data = pd.read_csv(train_path)
     test_data = pd.read_csv(test_path)
-    
+
     print(f"✅ Loaded train data: {train_data.shape}")
     print(f"✅ Loaded test data: {test_data.shape}")
     print(f"📊 Train columns: {list(train_data.columns)}")
     print(f"📊 Test columns: {list(test_data.columns)}")
-    
+
     return train_data, test_data
 
 # Set random seeds for reproducibility
@@ -458,9 +458,9 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
 
         # Create organized subdirectories for outputs
         residuals_dir = os.path.join(output_dir, "data", "residuals")
-        predictions_dir = os.path.join(output_dir, "data", "predictions")  
+        predictions_dir = os.path.join(output_dir, "data", "predictions")
         comparisons_dir = os.path.join(output_dir, "data", "comparisons")
-        
+
         os.makedirs(residuals_dir, exist_ok=True)
         os.makedirs(predictions_dir, exist_ok=True)
         os.makedirs(comparisons_dir, exist_ok=True)
@@ -525,22 +525,22 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
 
         # Step 6: Comprehensive evaluation and plotting
         print("\n📋 Step 6: Creating comprehensive evaluation plots...")
-        
+
         try:
             # Create standalone CNN plotting function
-            def create_cnn_standalone_plot(series_train, series_test, cnn_predictions, 
+            def create_cnn_standalone_plot(series_train, series_test, cnn_predictions,
                                          eval_metrics, best_params, output_dir):
                 """Create standalone CNN forecast plot."""
                 import plotly.graph_objects as go
                 import plotly.subplots as sp
                 import os
-                
+
                 # Create model signature for CNN
                 model_signature = f"CNN_Book_Sales_Forecast_filters{best_params['n_filters']}_kernel{best_params['kernel_size']}_layers{best_params['n_conv_layers']}"
-                
+
                 # Create the main plot
                 fig = go.Figure()
-                
+
                 # Add training data
                 fig.add_trace(go.Scatter(
                     x=series_train.index,
@@ -550,7 +550,7 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     line=dict(color='blue', width=2),
                     opacity=0.8
                 ))
-                
+
                 # Add actual test data
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -560,7 +560,7 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     line=dict(color='black', width=3),
                     marker=dict(size=5)
                 ))
-                
+
                 # Add CNN predictions
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -570,10 +570,10 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     line=dict(color='red', width=2, dash='dash'),
                     marker=dict(size=4)
                 ))
-                
+
                 # Update layout
                 title_text = f'CNN Book Sales Forecast<br><sub>MAE: {eval_metrics["mae"]:.2f} | MAPE: {eval_metrics["mape"]:.2f}% | RMSE: {eval_metrics["rmse"]:.2f}</sub>'
-                
+
                 fig.update_layout(
                     title=title_text,
                     xaxis_title="Date",
@@ -583,26 +583,26 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     height=500,
                     showlegend=True
                 )
-                
+
                 # Save plots - create necessary directories
                 os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
                 os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
-                
+
                 # Create descriptive file names with proper folder structure
                 safe_model_name = model_signature.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
                 html_filename = f"{output_dir}/plots/interactive/cnn_standalone_forecast.html"
                 png_filename = f"{output_dir}/plots/static/cnn_standalone_forecast.png"
                 csv_filename = f"{output_dir}/cnn_standalone_comparison.csv"
-                
+
                 # Save files
                 fig.write_html(html_filename)
                 fig.write_image(png_filename, width=1200, height=500)
-                
+
                 # Ensure arrays have the same length
                 min_length = min(len(series_test), len(cnn_predictions))
                 series_test_aligned = series_test.iloc[:min_length]
                 cnn_predictions_aligned = cnn_predictions[:min_length]
-                
+
                 # Save comparison data
                 comparison_df = pd.DataFrame({
                     'date': series_test_aligned.index,
@@ -614,19 +614,19 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     'model_signature': model_signature
                 })
                 comparison_df.to_csv(csv_filename, index=False)
-                
+
                 print(f"📁 CNN standalone plots saved to: {output_dir}")
                 print(f"   • HTML: {html_filename}")
                 print(f"   • PNG: {png_filename}")
                 print(f"   • CSV: {csv_filename}")
-                
+
                 return {
                     'figure': fig,
                     'comparison_df': comparison_df,
                     'model_signature': model_signature,
                     'metrics': eval_metrics
                 }
-            
+
             # Create standalone CNN plot
             plotting_results = create_cnn_standalone_plot(
                 series_train=train_series,
@@ -636,10 +636,10 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                 best_params=best_params,
                 output_dir=output_dir
             )
-            
+
             print("✅ CNN standalone plotting completed!")
             print(f"📊 Plotting results: {list(plotting_results.keys())}")
-            
+
         except ImportError as e:
             print(f"⚠️  Plotting module not available: {e}")
             print("📊 Continuing without plots...")
@@ -714,19 +714,19 @@ if __name__ == "__main__":
     """
     print("🚀 Running CNN standalone training with pipeline data...")
     print("=" * 60)
-    
+
     try:
         # Load pipeline data
         train_data, test_data = load_pipeline_data()
-        
+
         # Create output directory - use centralized outputs directory
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_dir = os.path.join(project_root, "outputs")
         os.makedirs(output_dir, exist_ok=True)
-        
+
         print(f"\n🔧 Running CNN training...")
         print("=" * 60)
-        
+
         # Run CNN training
         results = train_cnn_step(
             train_data=train_data,
@@ -737,17 +737,17 @@ if __name__ == "__main__":
             forecast_horizon=32,
             study_name="standalone_cnn_optimization"
         )
-        
+
         results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
-        
+
         print("\n✅ CNN standalone training completed successfully!")
         print("=" * 60)
-        
+
         # Extract metrics from hyperparameters
         hyperparams = json.loads(hyperparameters_json)
         eval_metrics = hyperparams.get('eval_metrics', {})
         best_params = hyperparams.get('best_params', {})
-        
+
         print(f"\n📊 CNN Results Summary:")
         print(f"• Model signature: {hyperparams.get('model_signature', 'CNN_Model')}")
         print(f"• Best parameters: {best_params}")
@@ -756,18 +756,18 @@ if __name__ == "__main__":
         print(f"• Test MAE: {eval_metrics.get('mae', 0):.2f}")
         print(f"• Test RMSE: {eval_metrics.get('rmse', 0):.2f}")
         print(f"• Test MAPE: {eval_metrics.get('mape', 0):.2f}%")
-        
+
         print(f"\n📁 Generated files in '{output_dir}/':")
         for file in os.listdir(output_dir):
             if file.endswith(('.csv', '.html', '.png')):
                 print(f"  • {file}")
-        
+
         print(f"\n🎉 CNN standalone execution completed successfully!")
         print(f"📁 Check the '{output_dir}' directory for generated plots and data files.")
-        
+
     except Exception as e:
         print(f"\n❌ CNN standalone training failed: {str(e)}")
         import traceback
         traceback.print_exc()
-        
+
     print("\n" + "=" * 60)

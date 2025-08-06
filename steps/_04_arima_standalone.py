@@ -14,23 +14,23 @@ warnings.filterwarnings('ignore')
 def load_pipeline_data():
     """Load train and test data from pipeline CSV files for consistent comparison."""
     print("📂 Loading pipeline train/test data from CSV files...")
-    
+
     train_path = "data/processed/combined_train_data.csv"
     test_path = "data/processed/combined_test_data.csv"
-    
+
     if not os.path.exists(train_path):
         raise FileNotFoundError(f"Pipeline train data not found: {train_path}")
     if not os.path.exists(test_path):
         raise FileNotFoundError(f"Pipeline test data not found: {test_path}")
-    
+
     train_data = pd.read_csv(train_path)
     test_data = pd.read_csv(test_path)
-    
+
     print(f"✅ Loaded train data: {train_data.shape}")
     print(f"✅ Loaded test data: {test_data.shape}")
     print(f"📊 Train columns: {list(train_data.columns)}")
     print(f"📊 Test columns: {list(test_data.columns)}")
-    
+
     return train_data, test_data
 
 def create_time_series_from_df(df: pd.DataFrame, target_col: str = "volume",
@@ -100,7 +100,7 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
     print(f"   • Patience: {patience} trials without improvement")
     print(f"   • Min improvement threshold: {min_improvement}")
     print(f"   • Min trials before stopping: {min_trials}")
-    
+
     storage_dir = os.path.expanduser("~/zenml_optuna_storage")
     os.makedirs(storage_dir, exist_ok=True)
     storage_url = f"sqlite:///{os.path.join(storage_dir, f'{study_name}.db')}"
@@ -112,7 +112,7 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
             load_if_exists=True,
             direction="minimize"
         )
-        
+
         print(f"📊 Found {len(study.trials)} existing trials")
         if len(study.trials) > 0:
             print(f"💾 Best value so far: {study.best_value:.4f}")
@@ -121,7 +121,7 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
         best_value = study.best_value if study.trials else float('inf')
         trials_without_improvement = 0
         last_improvement_trial = len(study.trials)
-        
+
         class EarlyStoppingCallback:
             def __init__(self, patience, min_improvement, min_trials, best_value, last_improvement_trial):
                 self.patience = patience
@@ -130,11 +130,11 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
                 self.best_value = best_value
                 self.last_improvement_trial = last_improvement_trial
                 self.trials_without_improvement = 0
-            
+
             def __call__(self, study, trial):
                 current_best = study.best_value
                 total_trials = len(study.trials)
-                
+
                 # Check if we found a significant improvement
                 if current_best < self.best_value - self.min_improvement:
                     self.best_value = current_best
@@ -143,18 +143,18 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
                     print(f"🎯 Trial {total_trials}: New best value {current_best:.4f} (improvement: {self.best_value - current_best:.4f})")
                 else:
                     self.trials_without_improvement = total_trials - self.last_improvement_trial
-                
+
                 # Early stopping check
-                if (total_trials >= self.min_trials and 
+                if (total_trials >= self.min_trials and
                     self.trials_without_improvement >= self.patience):
                     print(f"⏹️  Early stopping triggered!")
                     print(f"   • No improvement for {self.trials_without_improvement} trials")
                     print(f"   • Best value: {current_best:.4f}")
                     study.stop()
-        
+
         # Create callback for early stopping
         callback = EarlyStoppingCallback(patience, min_improvement, min_trials, best_value, last_improvement_trial)
-        
+
         print(f"⚙️  Starting optimization...")
         study.optimize(
             lambda trial: objective(trial, train_series, test_series),
@@ -166,7 +166,7 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
 
         total_trials = len(study.trials)
         improvement_trials = total_trials - last_improvement_trial
-        
+
         print(f"✅ Optimization completed:")
         print(f"   • Total trials: {total_trials}")
         print(f"   • Best value: {study.best_value:.4f}")
@@ -219,7 +219,7 @@ def parse_hyperparameters_json(json_string: str) -> Dict[str, Any]:
     return json.loads(json_string)
 
 
-def train_arima_step(train_data, test_data, output_dir, n_trials=50, 
+def train_arima_step(train_data, test_data, output_dir, n_trials=50,
                      study_name="arima_optimization"):
     """
     ARIMA training step with persistent Optuna storage for pipeline compatibility.
@@ -236,7 +236,7 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
             train_data = train_data.copy()
             train_data["volume"] = train_data["Volume"]
         if "Volume" in test_data.columns and "volume" not in test_data.columns:
-            test_data = test_data.copy() 
+            test_data = test_data.copy()
             test_data["volume"] = test_data["Volume"]
 
         # Convert to time series format
@@ -268,7 +268,7 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
             train_series, test_series, n_trials, study_name
         )
 
-        best_params = optimization_results["best_params"] 
+        best_params = optimization_results["best_params"]
         print(f"Best ARIMA parameters: {best_params}")
 
         # Train final model with best parameters
@@ -295,7 +295,7 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
         # Evaluation metrics
         for metric_name, metric_value in eval_metrics.items():
             results_data.append({
-                "result_type": "evaluation", 
+                "result_type": "evaluation",
                 "component": "test_metrics",
                 "parameter": metric_name,
                 "value": f"{metric_value:.4f}",
@@ -358,7 +358,7 @@ def train_arima_step(train_data, test_data, output_dir, n_trials=50,
         # Return error results matching format
         error_df = pd.DataFrame([{
             "result_type": "error",
-            "component": "training_error", 
+            "component": "training_error",
             "parameter": "error_message",
             "value": str(e),
             "timestamp": pd.Timestamp.now(),
@@ -411,19 +411,19 @@ if __name__ == "__main__":
     """
     print("🚀 Running ARIMA standalone training with pipeline data...")
     print("=" * 60)
-    
+
     try:
         # Load pipeline data
         train_data, test_data = load_pipeline_data()
-        
+
         # Create output directory - use centralized outputs directory
         project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         output_dir = os.path.join(project_root, "outputs")
         os.makedirs(output_dir, exist_ok=True)
-        
+
         print(f"\n🔧 Running ARIMA training...")
         print("=" * 60)
-        
+
         # Run ARIMA training
         results = train_arima_step(
             train_data=train_data,
@@ -432,17 +432,17 @@ if __name__ == "__main__":
             n_trials=50,
             study_name="standalone_arima_optimization"
         )
-        
+
         results_df, hyperparameters_json, model, residuals_df, test_predictions_df, forecast_comparison_df = results
-        
+
         print("\n✅ ARIMA standalone training completed successfully!")
         print("=" * 60)
-        
+
         # Extract metrics from hyperparameters
         hyperparams = json.loads(hyperparameters_json)
         eval_metrics = hyperparams.get('eval_metrics', {})
         best_params = hyperparams.get('best_params', {})
-        
+
         print(f"\n📊 ARIMA Results Summary:")
         print(f"• Model signature: {hyperparams.get('model_signature', 'ARIMA_Model')}")
         print(f"• Best parameters: {best_params}")
@@ -451,37 +451,37 @@ if __name__ == "__main__":
         print(f"• Test MAE: {eval_metrics.get('mae', 0):.2f}")
         print(f"• Test RMSE: {eval_metrics.get('rmse', 0):.2f}")
         print(f"• Test MAPE: {eval_metrics.get('mape', 0):.2f}%")
-        
+
         # Create organized subdirectories for outputs
         residuals_dir = os.path.join(output_dir, "data", "residuals")
         predictions_dir = os.path.join(output_dir, "data", "predictions")
         comparisons_dir = os.path.join(output_dir, "data", "comparisons")
-        
+
         os.makedirs(residuals_dir, exist_ok=True)
         os.makedirs(predictions_dir, exist_ok=True)
         os.makedirs(comparisons_dir, exist_ok=True)
-        
+
         # Save results to organized CSV locations
         forecast_comparison_df.to_csv(f"{comparisons_dir}/arima_forecast_comparison.csv", index=False)
         residuals_df.to_csv(f"{residuals_dir}/arima_residuals.csv", index=False)
         test_predictions_df.to_csv(f"{predictions_dir}/arima_predictions.csv", index=False)
-        
+
         # Add plotting functionality
         print(f"\n📋 Creating ARIMA forecast plots...")
         try:
             # Create standalone ARIMA plotting function
-            def create_arima_standalone_plot(series_train, series_test, arima_predictions, 
+            def create_arima_standalone_plot(series_train, series_test, arima_predictions,
                                            eval_metrics, best_params, output_dir):
                 """Create standalone ARIMA forecast plot."""
                 import plotly.graph_objects as go
                 import os
-                
+
                 # Create model signature for ARIMA
                 model_signature = f"ARIMA_({best_params['p']},{best_params['d']},{best_params['q']})_({best_params['P']},{best_params['D']},{best_params['Q']},52)"
-                
+
                 # Create the main plot
                 fig = go.Figure()
-                
+
                 # Add training data
                 fig.add_trace(go.Scatter(
                     x=series_train.index,
@@ -491,7 +491,7 @@ if __name__ == "__main__":
                     line=dict(color='blue', width=2),
                     opacity=0.8
                 ))
-                
+
                 # Add actual test data
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -501,7 +501,7 @@ if __name__ == "__main__":
                     line=dict(color='black', width=3),
                     marker=dict(size=5)
                 ))
-                
+
                 # Add ARIMA predictions
                 fig.add_trace(go.Scatter(
                     x=series_test.index,
@@ -511,10 +511,10 @@ if __name__ == "__main__":
                     line=dict(color='red', width=2, dash='dash'),
                     marker=dict(size=4)
                 ))
-                
+
                 # Update layout
                 title_text = f'ARIMA Book Sales Forecast<br><sub>MAE: {eval_metrics["mae"]:.2f} | MAPE: {eval_metrics["mape"]:.2f}% | RMSE: {eval_metrics["rmse"]:.2f}</sub>'
-                
+
                 fig.update_layout(
                     title=title_text,
                     xaxis_title="Date",
@@ -524,36 +524,36 @@ if __name__ == "__main__":
                     height=500,
                     showlegend=True
                 )
-                
+
                 # Save plots - create necessary directories
                 os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
                 os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
-                
+
                 # Create descriptive file names with proper folder structure
                 html_filename = f"{output_dir}/plots/interactive/arima_standalone_forecast.html"
                 png_filename = f"{output_dir}/plots/static/arima_standalone_forecast.png"
-                
+
                 # Save files
                 fig.write_html(html_filename)
                 fig.write_image(png_filename, width=1200, height=500)
-                
+
                 print(f"📁 ARIMA standalone plots saved to: {output_dir}")
                 print(f"   • HTML: {html_filename}")
                 print(f"   • PNG: {png_filename}")
-                
+
                 return {
                     'figure': fig,
                     'model_signature': model_signature,
                     'metrics': eval_metrics
                 }
-            
+
             # Prepare data for plotting
             # Create date series based on test data
             if "End Date" in test_data.columns:
                 test_dates = pd.to_datetime(test_data["End Date"])
             else:
                 test_dates = pd.date_range('2023-12-16', periods=len(test_predictions_df), freq='W-SAT')
-                
+
             if "End Date" in train_data.columns:
                 # Use actual train dates
                 train_dates = pd.to_datetime(train_data["End Date"])
@@ -562,11 +562,11 @@ if __name__ == "__main__":
                 # Create synthetic train dates
                 train_dates = pd.date_range('2020-01-01', periods=len(train_data), freq='W-SAT')
                 train_values = train_data["Volume"].values if "Volume" in train_data.columns else train_data["volume"].values
-            
+
             # Create series for plotting
             train_series = pd.Series(train_values, index=train_dates, name='Volume')
             test_series = pd.Series(test_predictions_df['actual'].values, index=test_dates[:len(test_predictions_df)], name='Volume')
-            
+
             # Create standalone ARIMA plot
             plotting_results = create_arima_standalone_plot(
                 series_train=train_series,
@@ -576,9 +576,9 @@ if __name__ == "__main__":
                 best_params=best_params,
                 output_dir=output_dir
             )
-            
+
             print("✅ ARIMA standalone plotting completed!")
-            
+
         except ImportError as e:
             print(f"⚠️  Plotting module not available: {e}")
             print("📊 Continuing without plots...")
@@ -587,17 +587,17 @@ if __name__ == "__main__":
             print("📊 Continuing without plots...")
             import traceback
             traceback.print_exc()
-        
+
         print(f"\n📁 Generated files in '{output_dir}/':")
         for file in os.listdir(output_dir):
             print(f"  • {file}")
-        
+
         print(f"\n🎉 ARIMA standalone execution completed successfully!")
         print(f"📁 Check the '{output_dir}' directory for generated plots and data files.")
-        
+
     except Exception as e:
         print(f"\n❌ ARIMA standalone training failed: {str(e)}")
         import traceback
         traceback.print_exc()
-        
+
     print("\n" + "=" * 60)

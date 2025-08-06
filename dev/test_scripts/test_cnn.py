@@ -51,7 +51,7 @@ def test_cnn_basic():
         train_data, test_data = create_sample_data()
         
         # Set up output directory
-        output_dir = "data/processed"
+        output_dir = "outputs"
         os.makedirs(output_dir, exist_ok=True)
         
         # Test CNN training with reduced parameters for speed
@@ -150,7 +150,7 @@ def test_cnn_data_compatibility():
             results = train_cnn_step(
                 train_data=train_data,
                 test_data=test_data,
-                output_dir="data/processed",
+                output_dir="outputs",
                 n_trials=1,  # Minimal for compatibility test
                 sequence_length=6,
                 forecast_horizon=len(test_data),
