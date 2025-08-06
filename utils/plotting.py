@@ -278,13 +278,14 @@ def plot_sales_trends(df: pd.DataFrame, isbn_list: List[str],
     return fig
 
 
-def create_summary_dashboard(df: pd.DataFrame, isbn_to_title: Dict[str, str]) -> go.Figure:
+def create_summary_dashboard(df: pd.DataFrame, isbn_to_title: Dict[str, str], max_books: int = 6) -> go.Figure:
     """
     Create a comprehensive dashboard with multiple subplots.
     
     Args:
         df: DataFrame with sales data
         isbn_to_title: Dictionary mapping ISBNs to book titles
+        max_books: Maximum number of books to display (default: 6)
         
     Returns:
         Plotly figure with subplots
@@ -293,56 +294,103 @@ def create_summary_dashboard(df: pd.DataFrame, isbn_to_title: Dict[str, str]) ->
     
     from plotly.subplots import make_subplots
     
+    # Use all available ISBNs (no filtering)
+    all_isbns = df['ISBN'].unique()
+    selected_isbns = list(all_isbns)
+    
+    logger.info(f"Displaying dashboard for all {len(selected_isbns)} books")
+    
+    # Use the full dataframe (no filtering needed)
+    df_filtered = df.copy()
+    
     # Create subplots
     fig = make_subplots(
         rows=2, cols=2,
-        subplot_titles=('Weekly Sales Volume', 'Yearly Sales Volume', 
-                       'Sales by Book', 'Sales Distribution'),
+        subplot_titles=('Weekly Sales Volume (All Books)', 'Yearly Total Sales Volume', 
+                       'Top 10 Books by Total Sales', 'Sales Distribution (Volume > 0)'),
         specs=[[{"secondary_y": False}, {"secondary_y": False}],
                [{"type": "pie"}, {"secondary_y": False}]]
     )
     
-    # Subplot 1: Weekly sales volume
-    for isbn in df['ISBN'].unique():
-        isbn_data = df[df['ISBN'] == isbn]
-        fig.add_trace(
-            go.Scatter(x=isbn_data.index, y=isbn_data['Volume'],
-                      mode='lines', name=f"{str(isbn)} - {isbn_to_title.get(str(isbn), 'Unknown')}"),
-            row=1, col=1
-        )
+    # Subplot 1: Weekly sales volume (no legend for readability)
+    for isbn in selected_isbns:
+        isbn_data = df_filtered[df_filtered['ISBN'] == isbn]
+        isbn_str = str(isbn)
+        title = isbn_to_title.get(isbn_str, 'Unknown')
+        if not isbn_data.empty:
+            fig.add_trace(
+                go.Scatter(x=isbn_data.index, y=isbn_data['Volume'],
+                          mode='lines', name=f"{isbn_str} - {title}", 
+                          showlegend=False),  # Hide legend for line chart
+                row=1, col=1
+            )
     
-    # Subplot 2: Yearly sales volume
-    yearly_data = df.groupby([df.index.year, 'ISBN'])['Volume'].sum().reset_index()
-    # The first column is the year, let's rename it for clarity
-    yearly_data.rename(columns={yearly_data.columns[0]: 'Year'}, inplace=True)
-    for isbn in yearly_data['ISBN'].unique():
-        isbn_data = yearly_data[yearly_data['ISBN'] == isbn]
-        fig.add_trace(
-            go.Bar(x=isbn_data['Year'], y=isbn_data['Volume'],
-                   name=f"{str(isbn)} - {isbn_to_title.get(str(isbn), 'Unknown')}"),
-            row=1, col=2
-        )
+    # Subplot 2: Yearly total sales volume (aggregated across all books)
+    yearly_total = df_filtered.groupby(df_filtered.index.year)['Volume'].sum().reset_index()
+    yearly_total.rename(columns={'End Date': 'Year'}, inplace=True)
     
-    # Subplot 3: Sales by book (pie chart)
-    total_sales_by_book = df.groupby('ISBN')['Volume'].sum()
     fig.add_trace(
-        go.Pie(labels=[f"{str(isbn)} - {isbn_to_title.get(str(isbn), 'Unknown')}" 
-                      for isbn in total_sales_by_book.index],
-               values=total_sales_by_book.values),
-        row=2, col=1
+        go.Bar(x=yearly_total['Year'], y=yearly_total['Volume'],
+               name='Total Sales Volume', showlegend=False),
+        row=1, col=2
     )
     
-    # Subplot 4: Sales distribution (histogram)
+    # Subplot 3: Sales by book (pie chart) - Show only top 10 books
+    total_sales_by_book = df_filtered.groupby('ISBN')['Volume'].sum().sort_values(ascending=False)
+    
+    # Get top 10 books and group the rest as "Others"
+    top_n = 10
+    top_books = total_sales_by_book.head(top_n)
+    others_sum = total_sales_by_book.iloc[top_n:].sum()
+    
+    labels = []
+    values = []
+    
+    # Add top books
+    for isbn, volume in top_books.items():
+        isbn_str = str(isbn)
+        title = isbn_to_title.get(isbn_str, 'Unknown')
+        labels.append(f"{isbn_str} - {title}")
+        values.append(volume)
+    
+    # Add "Others" category if there are more than top_n books
+    if others_sum > 0:
+        labels.append(f"Others ({len(total_sales_by_book) - top_n} books)")
+        values.append(others_sum)
+    
+    if values:
+        fig.add_trace(
+            go.Pie(labels=labels, values=values),
+            row=2, col=1
+        )
+    
+    # Subplot 4: Sales distribution (histogram) - Filter out zeros and negatives for better visualization
+    volume_positive = df_filtered[df_filtered['Volume'] > 0]['Volume']
+    
+    # Use log scale for better distribution visualization since data is highly skewed
     fig.add_trace(
-        go.Histogram(x=df['Volume'], nbinsx=30, name='Sales Distribution'),
+        go.Histogram(x=volume_positive, nbinsx=50, name='Sales Distribution (>0)', 
+                     showlegend=False),  # Hide legend for histogram
         row=2, col=2
     )
     
+    # Update y-axis to log scale for better visualization of skewed data
+    fig.update_yaxes(type="log", row=2, col=2)
+    
     fig.update_layout(
-        title_text="Book Sales Analysis Dashboard",
+        title_text=f"Book Sales Analysis Dashboard ({len(selected_isbns)} Books)",
         showlegend=True,
+        legend=dict(
+            orientation="v",
+            yanchor="bottom",
+            y=0,
+            xanchor="left",
+            x=1.02,
+            font=dict(size=10)  # Smaller font for pie chart legend
+        ),
         height=800,
-        width=1200
+        width=1200,  # Reduced width since only pie chart has legend
+        margin=dict(r=200)  # Smaller right margin
     )
     
     return fig
