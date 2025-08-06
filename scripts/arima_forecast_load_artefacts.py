@@ -108,7 +108,7 @@ def extract_objects(artefacts, book_name: str | None = None):
 # 3.  Simple plot that uses the stored test-set predictions
 # ------------------------------------------------------------------ #
 
-def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_path="plots"):
+def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_path="outputs"):
     # load test_predictions DataFrame
     for d in artefacts.values():
         for name, obj in d.items():
@@ -165,7 +165,7 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
 if __name__ == "__main__":
     PIPELINE_NAME = "book_sales_arima_pipeline"        # <- your pipeline
     BOOK          = None                               # or e.g. "The Alchemist"
-    PLOTS_FOLDER  = "plots"                            # plots folder
+    PLOTS_FOLDER  = "outputs"                          # outputs folder
 
     # Ensure plots folder exists
     os.makedirs(PLOTS_FOLDER, exist_ok=True)

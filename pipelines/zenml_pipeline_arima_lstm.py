@@ -22,7 +22,7 @@ from steps._02_preprocessing import preprocess_loaded_data
 from steps._03_5_modelling_prep import prepare_data_after_2012, prepare_multiple_books_data
 
 # Import the separated ARIMA logic
-from steps._04_arima_logic import (
+from steps._04_arima_standalone import (
     create_time_series_from_df,
     split_time_series,
     evaluate_forecast,

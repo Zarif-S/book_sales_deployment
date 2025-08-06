@@ -123,16 +123,16 @@ def plot_residuals_for_lstm(residuals_df: pd.DataFrame, save_plots: bool = True)
     plt.show()
     
     if save_plots:
-        # Create plots directory if it doesn't exist
-        plots_dir = os.path.join(os.path.dirname(__file__), '..', 'plots')
-        os.makedirs(plots_dir, exist_ok=True)
+        # Create outputs directory if it doesn't exist
+        outputs_dir = os.path.join(os.path.dirname(__file__), '..', 'outputs')
+        os.makedirs(outputs_dir, exist_ok=True)
         
-        plot_path = os.path.join(plots_dir, 'arima_residuals_for_lstm.png')
+        plot_path = os.path.join(outputs_dir, 'arima_residuals_for_lstm.png')
         plt.savefig(plot_path, dpi=300, bbox_inches='tight')
         print(f"Residuals plots saved to: {plot_path}")
         
         # Save the simple test plots as well, temporarily
-        simple_plot_path = os.path.join(plots_dir, 'simple_residuals_test.png')
+        simple_plot_path = os.path.join(outputs_dir, 'simple_residuals_test.png')
         fig2.savefig(simple_plot_path, dpi=300, bbox_inches='tight')
         print(f"Simple test plots saved to: {simple_plot_path}")
     

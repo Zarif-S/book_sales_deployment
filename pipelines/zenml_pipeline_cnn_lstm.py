@@ -22,7 +22,7 @@ from steps._02_preprocessing import preprocess_loaded_data
 from steps._03_5_modelling_prep import prepare_data_after_2012, prepare_multiple_books_data
 
 # Import the CNN logic
-from steps._04_cnn import (
+from steps._04_cnn_standalone import (
     train_cnn_step
 )
 

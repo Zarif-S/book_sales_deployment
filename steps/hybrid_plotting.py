@@ -18,7 +18,7 @@ import warnings
 warnings.filterwarnings('ignore')
 
 # Import our data loading functions
-from _05_lstm import load_arima_residuals_from_csv, prepare_residuals_for_lstm_hybrid_training
+from _05_lstm_sarima_residuals import load_arima_residuals_from_csv, prepare_residuals_for_lstm_hybrid_training
 
 
 def calculate_mape(y_true: np.ndarray, y_pred: np.ndarray) -> float:
@@ -401,7 +401,7 @@ def comprehensive_model_evaluation(
     first_model_forecast: Optional[np.ndarray] = None,
     model_signature: str = "Hybrid Model",
     save_plots: bool = False,
-    output_dir: str = "plots",
+    output_dir: str = "outputs",
     actual_test_data: Optional[pd.Series] = None
 ) -> Dict[str, Any]:
     """
