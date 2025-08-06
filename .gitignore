@@ -5,3 +5,7 @@
 
 outputs/
 data/outputs/
+lstm_original_data/**/checkpoint.weights.h5
+lstm_residuals_cnn_hybrid/**/checkpoint.weights.h5
+*.h5
+*.json

@@ -461,8 +461,10 @@ def comprehensive_model_evaluation(
     print("📊 Model Comparison Summary:")
     print(comparison_df.describe())
     
-    # Create main prediction plot
-    title = f'Hybrid Forecast - {model_signature}'
+    # Create main prediction plot with descriptive title
+    # Clean up model signature for display
+    display_title = model_signature.replace("_", " ").replace("plus", "+")
+    title = f'Book Sales Forecast - {display_title}'
     fig_main, metrics = plot_prediction_comparison(
         series_train=series_train,
         series_test=evaluation_target,  # Use evaluation target instead of series_test
@@ -477,14 +479,22 @@ def comprehensive_model_evaluation(
         import os
         os.makedirs(output_dir, exist_ok=True)
         
-        fig_main.write_html(f"{output_dir}/hybrid_forecast_comparison.html")
-        fig_main.write_image(f"{output_dir}/hybrid_forecast_comparison.png", 
-                            width=1200, height=500)
+        # Create descriptive file names based on model signature
+        safe_model_name = model_signature.replace(" ", "_").replace("+", "_plus_").replace("(", "").replace(")", "").replace("-", "_")
+        html_filename = f"{output_dir}/{safe_model_name}_forecast_comparison.html"
+        png_filename = f"{output_dir}/{safe_model_name}_forecast_comparison.png"
+        csv_filename = f"{output_dir}/{safe_model_name}_comparison_data.csv"
+        
+        fig_main.write_html(html_filename)
+        fig_main.write_image(png_filename, width=1200, height=500)
         
         # Save comparison data
-        comparison_df.to_csv(f"{output_dir}/model_comparison_data.csv")
+        comparison_df.to_csv(csv_filename)
         
         print(f"📁 Plots and data saved to: {output_dir}")
+        print(f"   • HTML: {html_filename}")
+        print(f"   • PNG: {png_filename}")
+        print(f"   • CSV: {csv_filename}")
     
     # Calculate additional metrics
     if first_model_forecast is not None:

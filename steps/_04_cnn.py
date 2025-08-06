@@ -2,7 +2,7 @@ import pandas as pd
 import numpy as np
 import os
 import json
-from typing import Dict, Any, Tuple
+from typing import Dict, Any, Tuple, Optional
 from sklearn.metrics import mean_absolute_error, mean_squared_error
 from sklearn.preprocessing import MinMaxScaler
 import optuna
@@ -403,11 +403,6 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
             "model_signature": f"CNN_filters{best_params['n_filters']}_kernel{best_params['kernel_size']}_layers{best_params['n_conv_layers']}"
         })
 
-        # Save residuals to CSV for LSTM integration
-        residuals_csv_path = os.path.join(output_dir, "cnn_residuals.csv")
-        residuals_df.to_csv(residuals_csv_path, index=False)
-        print(f"Saved residuals to: {residuals_csv_path}")
-
         # Create test predictions DataFrame
         test_predictions_df = pd.DataFrame({
             "date": test_series.index[:len(test_predictions_scaled)],
@@ -429,6 +424,21 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
             "squared_error": (actual_test_values - test_predictions_scaled) ** 2,
             "model_signature": f"CNN_filters{best_params['n_filters']}_kernel{best_params['kernel_size']}_layers{best_params['n_conv_layers']}"
         })
+
+        # Save residuals to CSV for LSTM integration
+        residuals_csv_path = os.path.join(output_dir, "cnn_residuals.csv")
+        residuals_df.to_csv(residuals_csv_path, index=False)
+        print(f"Saved residuals to: {residuals_csv_path}")
+
+        # Save CNN forecasts to CSV for LSTM integration
+        cnn_forecasts_csv_path = os.path.join(output_dir, "cnn_forecasts.csv")
+        test_predictions_df.to_csv(cnn_forecasts_csv_path, index=False)
+        print(f"Saved CNN forecasts to: {cnn_forecasts_csv_path}")
+
+        # Save forecast comparison to CSV
+        forecast_comparison_csv_path = os.path.join(output_dir, "cnn_forecast_comparison.csv")
+        forecast_comparison_df.to_csv(forecast_comparison_csv_path, index=False)
+        print(f"Saved forecast comparison to: {forecast_comparison_csv_path}")
 
         # Create results DataFrame matching ARIMA format
         results_data = []
@@ -472,6 +482,50 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
         print("CNN training completed successfully!")
         print(f"Best CNN parameters: {best_params}")
         print(f"Test performance - RMSE: {eval_metrics['rmse']:.2f}, MAE: {eval_metrics['mae']:.2f}")
+
+        # Step 6: Comprehensive evaluation and plotting
+        print("\n📋 Step 6: Creating comprehensive evaluation plots...")
+        
+        try:
+            from hybrid_plotting import comprehensive_model_evaluation
+            
+            # Prepare data for plotting
+            # For CNN, we'll use the CNN predictions as the "first model forecast"
+            # and create dummy LSTM predictions (since CNN is standalone)
+            
+            # Create dummy LSTM predictions (zeros) to match the expected interface
+            dummy_train_predictions = np.zeros(len(train_residuals))
+            dummy_test_predictions = np.zeros(len(test_predictions_scaled))
+            dummy_Y_test = actual_test_values
+            
+            # Use CNN predictions as the first model forecast
+            cnn_forecast_for_plotting = test_predictions_scaled
+            
+            plotting_results = comprehensive_model_evaluation(
+                series_train=train_series,
+                series_test=test_series,
+                train_predictions=dummy_train_predictions,
+                test_predictions=dummy_test_predictions,
+                Y_test=dummy_Y_test,
+                scaler=train_scaler,
+                first_model_forecast=cnn_forecast_for_plotting,
+                model_signature=f"CNN_Book_Sales_Forecast_filters{best_params['n_filters']}_kernel{best_params['kernel_size']}_layers{best_params['n_conv_layers']}",
+                save_plots=True,
+                output_dir=output_dir,
+                actual_test_data=test_series
+            )
+            
+            print("✅ Comprehensive plotting completed!")
+            print(f"📊 Plotting results: {list(plotting_results.keys())}")
+            
+        except ImportError as e:
+            print(f"⚠️  Plotting module not available: {e}")
+            print("📊 Continuing without plots...")
+        except Exception as e:
+            print(f"⚠️  Plotting failed: {e}")
+            print("📊 Continuing without plots...")
+            import traceback
+            traceback.print_exc()
 
         return (results_df, best_hyperparameters_json, final_model,
                 residuals_df, test_predictions_df, forecast_comparison_df)
