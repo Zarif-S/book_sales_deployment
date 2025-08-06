@@ -1,0 +1,171 @@
+## Next Steps for Development and MLOps
+
+As you build out your project, here’s the recommended order and focus areas:
+
+### 1. Data Loading
+- Write code to load your datasets (e.g., CSV files, databases, APIs) inside `classification_pipeline/steps/data_loader.py` and `regression_pipeline/steps/data_loader.py` (create if needed).
+- Ensure the data is cleanly ingested and ready for processing.
+
+### 2. Preprocessing & Feature Engineering
+- Implement data cleaning, transformation, and feature creation inside new or existing step files (e.g., `preprocessing.py`, or add functions in `pipeline.py`).
+- Prepare your data to be suitable for model training.
+
+### 3. Model Training
+- Code the logic for training your models using scikit-learn, XGBoost, or other libraries inside `trainer.py`.
+- Ensure models are saved, versioned, and ready for evaluation.
+
+### 4. Evaluation
+- Add evaluation metrics and validation logic inside `evaluator.py`.
+- Compare model performance and generate reports or visualizations.
+
+### 5. Pipeline Orchestration
+- Use ZenML to chain these steps (`data_loader`, `preprocessing`, `trainer`, `evaluator`) into reproducible, runnable pipelines.
+- This allows you to automate, version, and track runs seamlessly.
+
+---
+
+## When Does MLOps Kick In?
+
+Once your pipelines are working end-to-end, MLOps comes into play to:
+
+- Automate pipeline runs and retraining workflows  
+- Version your data, models, and code for reproducibility  
+- Deploy models as scalable services or batch jobs  
+- Monitor model health and performance over time  
+- Manage infrastructure and scale resources effectively  
+- Facilitate collaboration and governance through logging and audit trails  
+
+ZenML provides tools to manage all these steps smoothly, enabling you to transition from development to production with confidence.
+
+----------------
+
+# What’s not covered yet but can be future enhancements:
+- Building a REST API with FastAPI or Flask Not yet included.
+This is ideal if:
+- You want to expose your trained models for real-time inference.
+- You want to integrate the model with front-end apps or external systems.
+
+# Streaming platforms like Kafka
+- Not yet included. Use Kafka if:
+- You’re working with real-time data streams (e.g. log data, IoT sensors, clickstreams).
+- You need to process or retrain models based on continuous input.
+
+# Automated scheduling with Airflow or Prefect
+- Partially covered — ZenML includes a basic orchestrator, but:
+- Airflow/Prefect bring more control over scheduling, retries, monitoring, and multi-step pipelines across systems.
+- Useful if your project needs daily retraining, ETL pipelines, or cross-departmental data flows.
+
+# Optional Enhancements :
+- If you’re focusing on model development, stay as is. When you’re:
+- Ready to serve models → Add FastAPI/Flask, for serving trained models for real-time inference.
+- Working with real-time data → Explore Kafka allows streaming data ingestion or real-time processing.
+- Need enterprise-grade automation to schedule and orchestrate data pipelines and retraining workflows. → Add Airflow or Prefect.
+
+# Dashboards & Monitoring (To Be Decided)
+- You may wish to expose model outputs, evaluation metrics, or predictions using:
+| Option                 | Description                                                         |
+| ---------------------- | ------------------------------------------------------------------- |
+| **Looker Studio**      | Free, GCP-native BI dashboards (connect to BigQuery or GCS)         |
+| **Streamlit**          | Python-based interactive UI; call deployed models, display metrics  |
+| **Tableau / Power BI** | Enterprise dashboards with BigQuery connectors (limited free tiers) |
+| **Google Sheets**      | Lightweight reporting for internal use                              |
+
+You can embed dashboards or visualizations directly inside a Squarespace page using <iframe> tags inside a Code Block.
+| Tool               | Can Embed via `<iframe>`? | Notes                                                                             |
+| ------------------ | ------------------------- | --------------------------------------------------------------------------------- |
+| **Looker Studio**  | ✅ Yes                     | Publish dashboard → get embed code. Free & works well with BigQuery.              |
+| **Streamlit**      | ⚠️ Yes, *with tweaks*     | Requires you to host it (e.g., on Render, Heroku, or GCP App Engine), then embed. |
+| **Power BI**       | ✅ Pro tier required       | Only with Power BI Pro or Premium.                                                |
+| **Tableau Public** | ✅ Yes                     | Must make dashboard public.                                                       |
+| **Google Sheets**  | ✅ Yes                     | Easy for simple data display.                                                     |
+
+Simple Option: Show Static Results
+If your use case doesn’t need interactivity:
+Export plots, tables, or results as images or HTML
+Embed directly into Squarespace using Image or Code Blocks
+
+Pro Tip
+If you want a clean, professional integration:
+Use Streamlit to create a front-end for your model
+Host it (on Render, GCP, etc.)
+Embed it in your Squarespace site using an iframe:
+
+| Use Case              | Needed           | Hosting           | Embedding           | Tools              |
+| --------------------- | ---------------- | ----------------- | ------------------- | ------------------ |
+| Interactive ML        | API + UI         | Render, Vertex    | JS or iframe        | FastAPI, Streamlit |
+| Dashboard/Reports     | Static/Live data | Looker, Tableau   | iframe              | Looker, Streamlit  |
+| Automated Predictions | Pipelines        | Cloud + Scheduler | Dashboard or Sheets | ZenML + Airflow    |
+| Internal Tools        | App + Auth       | Private host      | Protected page      | Streamlit          |
+| Portfolio             | Demo + Docs      | Public            | iframe + links      | GitHub + Streamlit |
+
+1. Interactive ML Model
+“I want visitors to input something and get real-time predictions.”
+Examples:
+A user enters their financial data to predict loan approval.
+Uploads a photo or CSV and receives analysis.
+Enters text and gets sentiment or topic classification.
+Best Setup:
+Build a FastAPI or Flask API to serve your model.
+Optionally wrap it in a Streamlit front-end for ease.
+Host on Vertex AI (for scalability) or Render (for ease).
+Embed into Squarespace using an <iframe>.
+
+2. Dashboard/Insights Reporting
+“I want to show clients model results, performance metrics, or visualised insights.”
+Examples:
+A dashboard showing churn probabilities or forecasted sales.
+Visual summary of model accuracy, confusion matrix, feature importances.
+Best Setup:
+Use Looker Studio (formerly Google Data Studio), Tableau Public, or Streamlit dashboards.
+Embed via <iframe> or use downloadable reports.
+
+5. Experiment / Portfolio Showcase
+“I want to show what I’ve built to recruiters, clients, or collaborators.”
+Examples:
+Model showcase with a short description, outputs, and demo.
+Include GitHub links, code walkthroughs, and results.
+Best Setup:
+Combine:
+GitHub repo
+Simple Streamlit demo (e.g., live model or dashboard)
+Squarespace page with embedded live demo, write-up, and repo links
+
+Main Goal:
+Showcase your ML pipelines and results publicly — ideally with:
+A live demo (e.g. model predictions or visualisations),
+A walkthrough of your approach (code, logic, pipeline),
+And embedded visuals/dashboards on your Squarespace site.
+
+Next Steps by Use Case
+🧪 5. Portfolio/Showcase (🔝 Priority)
+✅ You have:
+A working ZenML pipeline structure for classification & regression.
+Clean project layout with Poetry and pyproject.toml.
+🧩 Add next:
+Run your pipeline: flesh out your data loader, trainer, evaluator.
+Save artifacts (e.g., plots, metrics, model.pkl) after evaluation.
+Use Streamlit to create a simple demo:
+Load model.
+Accept user input (text, sliders, CSV upload).
+Show prediction + confidence, or regression output.
+Deploy Streamlit app:
+Use Streamlit Community Cloud (Free).
+Or use Render, Vercel, or [GCP App Engine].
+Link or embed demo on your Squarespace portfolio:
+Use an <iframe> block or a hyperlink.
+🧠 1. Interactive ML (Secondary Priority)
+Use case: Let users interact with your trained model.
+How to do it:
+If you're happy with Streamlit: it already serves as an interactive layer.
+For more control: deploy the model via a FastAPI or Flask backend (optional for now).
+Bonus: ZenML supports model deployment to Vertex AI, Seldon, etc.
+
+2. Dashboards/Insights
+Goal: Visualise key metrics from your model runs.
+Options:
+Use Streamlit to display metrics, confusion matrices, feature importances.
+Save metrics to CSV and load them into:
+Looker Studio (free with GCP),
+Tableau Public,
+Or even embed a Google Sheet chart into Squarespace.
+Bonus: Track experiments using MLflow, already installed.

@@ -6,22 +6,27 @@ import os
 import keras_tuner as kt
 
 
-def load_arima_residuals_from_csv(data_dir: str = "data/processed") -> pd.DataFrame:
+def load_arima_residuals_from_csv(data_dir: str = "outputs") -> pd.DataFrame:
     """
     Load residuals from CSV file saved by the ARIMA pipeline.
     """
     print("🔍 Loading ARIMA residuals from CSV file...")
 
-    # Look for residuals CSV in the data directory
-    residuals_csv_path = os.path.join(data_dir, "arima_residuals.csv")
+    # Look for residuals CSV in the organized outputs directory structure
+    organized_residuals_path = os.path.join(data_dir, "data", "residuals", "arima_residuals.csv")
 
-    if not os.path.exists(residuals_csv_path):
-        print(f"⚠️  Residuals CSV not found at: {residuals_csv_path}")
-        print("📋 Checking for alternative locations...")
+    if os.path.exists(organized_residuals_path):
+        residuals_csv_path = organized_residuals_path
+        print(f"✅ Found organized residuals CSV at: {residuals_csv_path}")
+    else:
+        print(f"⚠️  Organized residuals CSV not found at: {organized_residuals_path}")
+        print("📋 Checking for legacy locations...")
 
-        # Check other possible locations
+        # Check legacy and alternative locations
         alternative_paths = [
-            "arima_standalone_outputs/arima_residuals.csv",
+            os.path.join(data_dir, "arima_residuals.csv"),  # Direct in outputs
+            "data/processed/arima_residuals.csv",           # In data/processed
+            "arima_standalone_outputs/arima_residuals.csv", # Old standalone dir
             "data/arima_residuals.csv", 
             "arima_residuals.csv",
             os.path.join(data_dir, "..", "arima_residuals.csv")
@@ -824,7 +829,7 @@ def complete_lstm_workflow(sarima_forecasts: np.ndarray = None):
 
         # Try to import plotting functions (optional)
         try:
-            from hybrid_plotting import comprehensive_model_evaluation
+            from utils.hybrid_plotting import comprehensive_model_evaluation
 
             plotting_results = comprehensive_model_evaluation(
                 series_train=train_series,

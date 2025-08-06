@@ -1,0 +1,41 @@
+# Project Structure 30 July 2025 last updated 
+
+.
+├── PROJECT_SUMMARY.md
+├── README.md
+├── README_CLEANED.md
+├── data
+│   ├── outputs
+│   ├── processed
+│   └── raw
+├── next_steps
+│   ├── next_steps_for_development_and_mlops_16_jul_25
+│   └── script_to_install_other_pcs
+├── outputs
+├── pipelines
+│   ├── __init__.py
+│   ├── old_zenml_pipeline.py
+│   └── zenml_pipeline.py
+├── poetry.lock
+├── progress_summaries
+│   └── overall_progress_summary_16_jul_25
+├── pyproject.toml
+├── scripts
+│   ├── run_analysis.py
+│   ├── run_classification.py
+│   ├── run_time_series.py
+│   └── test_cleaned_code.py
+├── steps
+│   ├── _01_load_data.py
+│   ├── _02_preprocessing.py
+│   ├── __init__.py
+│   ├── __pycache__
+│   └── old_load_data
+├── tests
+│   ├── __pycache__
+│   ├── summary_unit_tests_01_load_data
+│   └── unit_tests_01_load_data.py
+└── utils
+    ├── __init__.py
+    ├── __pycache__
+    └── plotting.py

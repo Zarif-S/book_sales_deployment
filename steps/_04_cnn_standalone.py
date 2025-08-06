@@ -456,18 +456,27 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
             "model_signature": f"CNN_filters{best_params['n_filters']}_kernel{best_params['kernel_size']}_layers{best_params['n_conv_layers']}"
         })
 
-        # Save residuals to CSV for LSTM integration
-        residuals_csv_path = os.path.join(output_dir, "cnn_residuals.csv")
+        # Create organized subdirectories for outputs
+        residuals_dir = os.path.join(output_dir, "data", "residuals")
+        predictions_dir = os.path.join(output_dir, "data", "predictions")  
+        comparisons_dir = os.path.join(output_dir, "data", "comparisons")
+        
+        os.makedirs(residuals_dir, exist_ok=True)
+        os.makedirs(predictions_dir, exist_ok=True)
+        os.makedirs(comparisons_dir, exist_ok=True)
+
+        # Save residuals to organized CSV location for LSTM integration
+        residuals_csv_path = os.path.join(residuals_dir, "cnn_residuals.csv")
         residuals_df.to_csv(residuals_csv_path, index=False)
         print(f"Saved residuals to: {residuals_csv_path}")
 
-        # Save CNN forecasts to CSV for LSTM integration
-        cnn_forecasts_csv_path = os.path.join(output_dir, "cnn_forecasts.csv")
+        # Save CNN forecasts to organized CSV location for LSTM integration
+        cnn_forecasts_csv_path = os.path.join(predictions_dir, "cnn_forecasts.csv")
         test_predictions_df.to_csv(cnn_forecasts_csv_path, index=False)
         print(f"Saved CNN forecasts to: {cnn_forecasts_csv_path}")
 
-        # Save forecast comparison to CSV
-        forecast_comparison_csv_path = os.path.join(output_dir, "cnn_forecast_comparison.csv")
+        # Save forecast comparison to organized CSV location
+        forecast_comparison_csv_path = os.path.join(comparisons_dir, "cnn_forecast_comparison.csv")
         forecast_comparison_df.to_csv(forecast_comparison_csv_path, index=False)
         print(f"Saved forecast comparison to: {forecast_comparison_csv_path}")
 
@@ -575,13 +584,14 @@ def train_cnn_step(train_data, test_data, output_dir, n_trials=40,
                     showlegend=True
                 )
                 
-                # Save plots
-                os.makedirs(output_dir, exist_ok=True)
+                # Save plots - create necessary directories
+                os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
+                os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
                 
-                # Create descriptive file names
+                # Create descriptive file names with proper folder structure
                 safe_model_name = model_signature.replace(" ", "_").replace("(", "").replace(")", "").replace("-", "_")
-                html_filename = f"{output_dir}/cnn_standalone_forecast.html"
-                png_filename = f"{output_dir}/cnn_standalone_forecast.png"
+                html_filename = f"{output_dir}/plots/interactive/cnn_standalone_forecast.html"
+                png_filename = f"{output_dir}/plots/static/cnn_standalone_forecast.png"
                 csv_filename = f"{output_dir}/cnn_standalone_comparison.csv"
                 
                 # Save files
@@ -709,8 +719,9 @@ if __name__ == "__main__":
         # Load pipeline data
         train_data, test_data = load_pipeline_data()
         
-        # Create output directory
-        output_dir = "cnn_standalone_outputs"
+        # Create output directory - use centralized outputs directory
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_dir = os.path.join(project_root, "outputs")
         os.makedirs(output_dir, exist_ok=True)
         
         print(f"\n🔧 Running CNN training...")

@@ -705,7 +705,7 @@ def complete_lstm_original_data_workflow():
         print("\n📋 Step 7: Creating evaluation plots...")
 
         try:
-            from hybrid_plotting import comprehensive_model_evaluation
+            from utils.hybrid_plotting import comprehensive_model_evaluation
             
             # Ensure outputs directory exists
             import os
@@ -985,8 +985,9 @@ if __name__ == "__main__":
         # Load pipeline data
         train_data, test_data = load_pipeline_data()
         
-        # Create output directory
-        output_dir = "lstm_standalone_outputs"
+        # Create output directory - use centralized outputs directory
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        output_dir = os.path.join(project_root, "outputs")
         os.makedirs(output_dir, exist_ok=True)
         
         print(f"\n🔧 Running LSTM training...")
@@ -1022,9 +1023,18 @@ if __name__ == "__main__":
         print(f"• Test RMSE: {eval_metrics.get('rmse', 0):.2f}")
         print(f"• Test MAPE: {eval_metrics.get('mape', 0):.2f}%")
         
-        # Save results to CSV for comparison
-        forecast_comparison_df.to_csv(f"{output_dir}/lstm_forecast_comparison.csv", index=False)
-        test_predictions_df.to_csv(f"{output_dir}/lstm_predictions.csv", index=False)
+        # Create organized subdirectories for outputs
+        residuals_dir = os.path.join(output_dir, "data", "residuals")
+        predictions_dir = os.path.join(output_dir, "data", "predictions")
+        comparisons_dir = os.path.join(output_dir, "data", "comparisons")
+        
+        os.makedirs(residuals_dir, exist_ok=True)
+        os.makedirs(predictions_dir, exist_ok=True)
+        os.makedirs(comparisons_dir, exist_ok=True)
+        
+        # Save results to organized CSV locations
+        forecast_comparison_df.to_csv(f"{comparisons_dir}/lstm_forecast_comparison.csv", index=False)
+        test_predictions_df.to_csv(f"{predictions_dir}/lstm_predictions.csv", index=False)
         
         # Add plotting functionality
         print(f"\n📋 Creating LSTM forecast plots...")
@@ -1085,12 +1095,13 @@ if __name__ == "__main__":
                     showlegend=True
                 )
                 
-                # Save plots
-                os.makedirs(output_dir, exist_ok=True)
+                # Save plots - create necessary directories
+                os.makedirs(f"{output_dir}/plots/interactive", exist_ok=True)
+                os.makedirs(f"{output_dir}/plots/static", exist_ok=True)
                 
-                # Create descriptive file names
-                html_filename = f"{output_dir}/lstm_standalone_forecast.html"
-                png_filename = f"{output_dir}/lstm_standalone_forecast.png"
+                # Create descriptive file names with proper folder structure
+                html_filename = f"{output_dir}/plots/interactive/lstm_standalone_forecast.html"
+                png_filename = f"{output_dir}/plots/static/lstm_standalone_forecast.png"
                 
                 # Save files
                 fig.write_html(html_filename)
