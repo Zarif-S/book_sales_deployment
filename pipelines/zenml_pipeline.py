@@ -305,6 +305,8 @@ def train_models_from_consolidated_data(
                 test_predictions = final_model.forecast(steps=len(test_series))
                 evaluation_metrics = evaluate_forecast(test_series.values, test_predictions.values)
 
+            # MLflow logging moved outside try block to prevent training failures
+
             # Save model using MLflow format (production-ready)
             book_output_dir = os.path.join(output_dir, f'book_{book_isbn}')
             os.makedirs(book_output_dir, exist_ok=True)
@@ -377,6 +379,40 @@ def train_models_from_consolidated_data(
             logger.error(f"❌ Training failed for {book_isbn}: {str(e)}")
             book_results[book_isbn] = {"error": str(e)}
             failed_models += 1
+        
+        # Try MLflow logging after training completes (success or failure)
+        # This ensures MLflow logging doesn't interfere with model training
+        if book_isbn in book_results and "error" not in book_results[book_isbn]:
+            try:
+                # Use book-specific prefixed parameters to avoid conflicts with ZenML's experiment tracker
+                book_params = {
+                    f"{book_isbn}_book_isbn": book_isbn,
+                    f"{book_isbn}_model_type": "SARIMA",
+                    f"{book_isbn}_p": book_results[book_isbn]['best_params']['p'],
+                    f"{book_isbn}_d": book_results[book_isbn]['best_params']['d'],
+                    f"{book_isbn}_q": book_results[book_isbn]['best_params']['q'],
+                    f"{book_isbn}_P": book_results[book_isbn]['best_params']['P'],
+                    f"{book_isbn}_D": book_results[book_isbn]['best_params']['D'],
+                    f"{book_isbn}_Q": book_results[book_isbn]['best_params']['Q'],
+                    f"{book_isbn}_seasonal_period": 52,
+                    f"{book_isbn}_optimization_method": "optuna"
+                }
+                
+                book_metrics = {
+                    f"{book_isbn}_mae": book_results[book_isbn]['evaluation_metrics'].get('mae', 0),
+                    f"{book_isbn}_rmse": book_results[book_isbn]['evaluation_metrics'].get('rmse', 0),
+                    f"{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0)
+                }
+                
+                # Log to the main ZenML-managed MLflow run with prefixed names
+                mlflow.log_params(book_params)
+                mlflow.log_metrics(book_metrics)
+                
+                logger.info(f"📊 Logged parameters and metrics to MLflow for {book_isbn}")
+                
+            except Exception as mlflow_error:
+                logger.warning(f"⚠️ MLflow logging failed for {book_isbn}: {mlflow_error}")
+                logger.info(f"📊 Model training was successful, MLflow logging is optional")
 
     # Return results in same format as original function
     return {
@@ -833,6 +869,11 @@ def train_individual_arima_models_step(
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
+    # Set MLflow experiment name for this pipeline run
+    experiment_name = "book_sales_arima_modeling"
+    mlflow.set_experiment(experiment_name)
+    logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
+
     try:
         # Create ARIMA output directory in outputs/models/arima
         project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -843,6 +884,15 @@ def train_individual_arima_models_step(
         logger.info(f"Output directory: {arima_output_dir}")
         logger.info(f"Optuna trials per book: {n_trials}")
 
+        # Log pipeline-level parameters (these apply to the overall training run)
+        mlflow.log_params({
+            "pipeline_type": "arima_training",
+            "total_books": len(selected_isbns),
+            "n_trials_per_book": n_trials,
+            "books": ",".join(selected_isbns),
+            "output_directory": arima_output_dir
+        })
+        
         # Train individual models using consolidated artifacts
         training_results = train_models_from_consolidated_data(
             train_data=train_data,
@@ -851,6 +901,18 @@ def train_individual_arima_models_step(
             output_dir=arima_output_dir,
             n_trials=n_trials
         )
+        
+        # Log pipeline-level summary metrics
+        pipeline_success_rate = (training_results.get('successful_models', 0) / 
+                               training_results.get('total_books', 1) * 100)
+        mlflow.log_metrics({
+            "pipeline_success_rate": pipeline_success_rate,
+            "total_books": training_results.get('total_books', 0),
+            "successful_models": training_results.get('successful_models', 0),
+            "failed_models": training_results.get('failed_models', 0)
+        })
+        
+        logger.info(f"📊 Logged pipeline summary to MLflow: {pipeline_success_rate:.1f}% success rate")
 
         # Extract success metrics
         total_books = training_results.get('total_books', 0)
