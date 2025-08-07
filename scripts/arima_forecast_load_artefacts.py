@@ -4,6 +4,13 @@ import pandas as pd
 from sklearn.metrics import mean_absolute_error, mean_absolute_percentage_error
 import os
 import numpy as np
+import warnings
+import mlflow
+import mlflow.statsmodels
+
+# Suppress specific statsmodels warnings about unsupported index
+warnings.filterwarnings('ignore', category=UserWarning, module='statsmodels.tsa.base.tsa_model', message='No supported index is available.*')
+warnings.filterwarnings('ignore', category=FutureWarning, module='statsmodels.tsa.base.tsa_model', message='No supported index is available.*')
 
 # ------------------------------------------------------------------ #
 # 1.  Grab the most recent run of the pipeline and load artefacts
@@ -50,7 +57,7 @@ def list_available_artifacts(artefacts):
 # 2.  Pull the objects we need (model, train/test, predictions)
 # Updated for separate train_data and test_data artifacts
 # ------------------------------------------------------------------ #
-def extract_objects(artefacts, book_name: str | None = None):
+def extract_objects(artefacts, book_isbn: str | None = None):
     """Return train_series, test_series and the fitted SARIMA model."""
     # Find train_data and test_data DataFrames (separate artifacts now)
     train_df = None
@@ -68,41 +75,136 @@ def extract_objects(artefacts, book_name: str | None = None):
     if test_df is None:
         raise RuntimeError("Could not locate 'test_data' artefact")
 
-    # choose book
-    if not book_name:
-        book_name = train_df["book_name"].unique()[0]
+    # choose book by ISBN
+    if not book_isbn:
+        book_isbn = train_df["ISBN"].unique()[0]
 
-    # Filter by book and extract volume series
-    book_train_df = train_df[train_df.book_name == book_name]
-    book_test_df = test_df[test_df.book_name == book_name]
+    # Filter by ISBN and extract volume series
+    book_train_df = train_df[train_df.ISBN == book_isbn]
+    book_test_df = test_df[test_df.ISBN == book_isbn]
 
     if book_train_df.empty:
-        raise RuntimeError(f"No training data found for book: {book_name}")
+        raise RuntimeError(f"No training data found for ISBN: {book_isbn}")
     if book_test_df.empty:
-        raise RuntimeError(f"No test data found for book: {book_name}")
+        raise RuntimeError(f"No test data found for ISBN: {book_isbn}")
 
     # Create time series (data is already indexed by date from our pipeline)
-    # If 'volume' column exists, use it; otherwise use 'Volume'
-    volume_col = 'volume' if 'volume' in book_train_df.columns else 'Volume'
+    # Use Volume column from consolidated artifacts
+    volume_col = 'Volume'
+    if volume_col not in book_train_df.columns:
+        raise RuntimeError(f"Volume column not found. Available columns: {list(book_train_df.columns)}")
 
+    # Ensure we have proper datetime index for both train and test
+    if 'End Date' in book_train_df.columns:
+        book_train_df['End Date'] = pd.to_datetime(book_train_df['End Date'])
+        book_train_df = book_train_df.set_index('End Date')
+        book_test_df['End Date'] = pd.to_datetime(book_test_df['End Date'])
+        book_test_df = book_test_df.set_index('End Date')
+    
     train = book_train_df[volume_col].sort_index()
     test = book_test_df[volume_col].sort_index()
+    
+    # Get book title for display
+    book_title = book_train_df["Title"].iloc[0] if "Title" in book_train_df.columns else f"Book_{book_isbn}"
 
-    # SARIMA model (output 'trained_model' of train_arima_optuna_step)
+    # SARIMA model - load from saved file since models are saved to disk, not as artifacts
     model = None
+    
+    # First, get the training results to find the model path
+    arima_results = None
     for d in artefacts.values():
         for name, obj in d.items():
-            if "trained_model" in name:
-                model = obj
+            if "arima_training_results" in name and isinstance(obj, dict):
+                arima_results = obj
                 break
+    
+    if arima_results and 'book_results' in arima_results:
+        book_results = arima_results['book_results']
+        if book_isbn in book_results:
+            book_result = book_results[book_isbn]
+            if 'model_path' in book_result and 'error' not in book_result:
+                model_path = book_result['model_path']
+                try:
+                    # Try loading as MLflow model first
+                    if os.path.isdir(model_path) and os.path.exists(os.path.join(model_path, 'MLmodel')):
+                        model = mlflow.statsmodels.load_model(model_path)
+                        print(f"✅ Loaded MLflow model from: {model_path}")
+                        
+                        # Load model metadata to restore datetime context
+                        model_datetime_context = None
+                        try:
+                            import mlflow.models
+                            model_metadata = mlflow.models.Model.load(model_path).metadata
+                            if model_metadata:
+                                train_freq = model_metadata.get('train_freq')
+                                train_start = model_metadata.get('train_start') 
+                                train_end = model_metadata.get('train_end')
+                                train_length = model_metadata.get('training_data_length')
+                                
+                                if train_start and train_end and train_length:
+                                    # Store datetime context for prediction
+                                    model_datetime_context = {
+                                        'train_start': pd.to_datetime(train_start),
+                                        'train_end': pd.to_datetime(train_end),
+                                        'train_length': train_length,
+                                        'train_freq': train_freq
+                                    }
+                                    print(f"✅ Restored model datetime context: {train_start} to {train_end} ({train_length} points)")
+                        except Exception as meta_e:
+                            print(f"⚠️ Could not load model metadata: {meta_e}")
+                            
+                        # Store the datetime context in the model object for later use
+                        if model_datetime_context:
+                            model._mlflow_datetime_context = model_datetime_context
+                            
+                            # Try to reconstruct the model's datetime context from orig_endog or metadata
+                            try:
+                                # Check if orig_endog already has datetime index (best case)
+                                if hasattr(model, 'data') and hasattr(model.data, 'orig_endog') and model.data.orig_endog is not None:
+                                    orig_endog = model.data.orig_endog
+                                    if hasattr(orig_endog, 'index') and pd.api.types.is_datetime64_any_dtype(orig_endog.index):
+                                        # Use the existing datetime index from orig_endog
+                                        model.data.dates = orig_endog.index
+                                        model.data.freq = orig_endog.index.freq
+                                        print(f"✅ Restored datetime context from orig_endog: {orig_endog.index[0]} to {orig_endog.index[-1]}")
+                                        print(f"  Frequency: {orig_endog.index.freq}")
+                                    else:
+                                        # Fallback: reconstruct from metadata
+                                        train_length = model_datetime_context['train_length']
+                                        train_start = model_datetime_context['train_start']
+                                        train_end = model_datetime_context['train_end']
+                                        datetime_index = pd.date_range(start=train_start, end=train_end, periods=train_length)
+                                        model.data.dates = datetime_index
+                                        model.data.freq = datetime_index.freq
+                                        print(f"✅ Reconstructed datetime context from metadata: {datetime_index[0]} to {datetime_index[-1]}")
+                                        
+                            except Exception as idx_e:
+                                print(f"⚠️ Could not reconstruct model datetime context: {idx_e}")
+                            
+                    else:
+                        # Fallback to pickle for compatibility
+                        if model_path.endswith('.pkl'):
+                            import pickle
+                            with open(model_path, 'rb') as f:
+                                model = pickle.load(f)
+                            print(f"✅ Loaded pickle model from: {model_path}")
+                        else:
+                            raise FileNotFoundError(f"Model file not found or unrecognized format: {model_path}")
+                            
+                except Exception as e:
+                    print(f"❌ Failed to load model from {model_path}: {e}")
+                    raise RuntimeError(f"Could not load model from {model_path}: {e}")
+            else:
+                raise RuntimeError(f"Model training failed for ISBN {book_isbn}: {book_result.get('error', 'Unknown error')}")
         else:
-            continue
-        break
+            raise RuntimeError(f"No training results found for ISBN {book_isbn}")
+    else:
+        raise RuntimeError("Could not find ARIMA training results in artifacts")
 
     if model is None:
-        raise RuntimeError("Could not find a trained model artefact")
+        raise RuntimeError("Could not load trained model")
 
-    return train, test, model, book_name
+    return train, test, model, book_isbn, book_title
 
 
 # ------------------------------------------------------------------ #
@@ -141,22 +243,118 @@ def load_arima_results_from_csv(csv_dir="arima_standalone_outputs"):
 # 3.  Simple plot that uses the stored test-set predictions
 # ------------------------------------------------------------------ #
 
-def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_path="outputs/plots/interactive"):
-    # load test_predictions DataFrame
+def get_selected_isbns_from_artifacts(artefacts):
+    """Extract the selected ISBNs that were used in the pipeline."""
+    # First try to find selected_isbns artifact
     for d in artefacts.values():
         for name, obj in d.items():
-            if "test_predictions" in name and isinstance(obj, pd.DataFrame):
-                preds = obj
-                break
-        else:
-            continue
-        break
-    else:
-        raise RuntimeError("No 'test_predictions' artefact found")
+            if "selected_isbns" in name and isinstance(obj, list):
+                return obj
+    
+    # If not found, extract from arima_training_results
+    for d in artefacts.values():
+        for name, obj in d.items():
+            if "arima_training_results" in name and isinstance(obj, dict):
+                book_results = obj.get('book_results', {})
+                if book_results:
+                    return list(book_results.keys())
+    
+    # Fallback: extract unique ISBNs from train_data
+    for d in artefacts.values():
+        for name, obj in d.items():
+            if "train_data" in name and hasattr(obj, 'columns') and 'ISBN' in obj.columns:
+                return obj['ISBN'].unique().tolist()
+    
+    return None
 
-    # Calculate metrics
-    mae  = preds.absolute_error.mean()
-    mape = (preds.absolute_error / preds.actual).mean() * 100
+def plot_test_predictions(artefacts, book_isbn=None, title="SARIMA test-set performance", save_path="outputs/plots/interactive"):
+    # Extract train/test data and model for the specific book
+    try:
+        train, test, model, isbn, book_title = extract_objects(artefacts, book_isbn)
+        
+        # Generate predictions using the model with proper datetime context
+        if hasattr(model, '_mlflow_datetime_context') and model._mlflow_datetime_context:
+            # Use MLflow metadata to create proper datetime context for predictions
+            datetime_ctx = model._mlflow_datetime_context
+            train_start = datetime_ctx['train_start']
+            train_length = datetime_ctx['train_length']
+            
+            # Create proper datetime index for predictions
+            # The test period starts right after training period
+            test_start_idx = train_length
+            test_end_idx = test_start_idx + len(test) - 1
+            
+            # For SARIMA with datetime context, we can use the proper indices
+            print(f"🕐 Using datetime context: train_length={train_length}, test_period={test_start_idx}-{test_end_idx}")
+            
+            try:
+                # Use get_prediction with the proper indices based on training length
+                forecast_result = model.get_prediction(start=test_start_idx, end=test_end_idx, dynamic=False)
+                test_predictions = forecast_result.predicted_mean
+                print(f"✅ Predictions made with datetime context")
+            except Exception as e:
+                print(f"⚠️ Datetime context prediction failed: {e}, falling back to forecast()")
+                # Fallback to forecast method which is more robust
+                test_predictions = model.forecast(steps=len(test))
+        else:
+            # Fallback to original logic if no MLflow context available
+            print(f"⚠️ No MLflow datetime context available, using fallback prediction")
+            combined_series = pd.concat([train, test])
+            
+            # Use the datetime index from the combined series for predictions
+            start_date = test.index[0] if hasattr(test, 'index') and len(test) > 0 else len(train)
+            end_date = test.index[-1] if hasattr(test, 'index') and len(test) > 0 else len(train) + len(test) - 1
+            
+            # Use get_prediction with proper datetime indexing
+            try:
+                forecast_result = model.get_prediction(start=start_date, end=end_date, dynamic=False)
+                test_predictions = forecast_result.predicted_mean
+            except (KeyError, ValueError) as e:
+                # Fallback to integer indexing if datetime indexing fails
+                start_idx = len(train)
+                end_idx = start_idx + len(test) - 1
+                forecast_result = model.get_prediction(start=start_idx, end=end_idx, dynamic=False)
+                test_predictions = forecast_result.predicted_mean
+        
+        # Create a predictions DataFrame with proper date indexing
+        if hasattr(test, 'index') and pd.api.types.is_datetime64_any_dtype(test.index):
+            # Use the test data's date index
+            pred_index = test.index
+        else:
+            # Create a simple integer index if no proper date index exists
+            pred_index = range(len(test))
+        
+        preds = pd.DataFrame({
+            'date': pred_index,
+            'actual': test.values,
+            'predicted': test_predictions.values
+        })
+        preds['absolute_error'] = abs(preds['actual'] - preds['predicted'])
+        
+        # Calculate metrics
+        mae  = preds.absolute_error.mean()
+        mape = (preds.absolute_error / preds.actual).mean() * 100
+        
+        # Update title with book info
+        title = f"SARIMA test-set performance - {book_title} (ISBN: {isbn})"
+        
+    except Exception as e:
+        print(f"Error extracting model data: {e}")
+        # Fallback: load test_predictions DataFrame if available
+        for d in artefacts.values():
+            for name, obj in d.items():
+                if "test_predictions" in name and isinstance(obj, pd.DataFrame):
+                    preds = obj
+                    break
+            else:
+                continue
+            break
+        else:
+            raise RuntimeError("No 'test_predictions' artefact found and could not generate predictions")
+
+        # Calculate metrics from existing predictions
+        mae  = preds.absolute_error.mean()
+        mape = (preds.absolute_error / preds.actual).mean() * 100
 
     fig = go.Figure()
     fig.add_trace(go.Scatter(x=preds.date, y=preds.actual,
@@ -185,7 +383,11 @@ def plot_test_predictions(artefacts, title="SARIMA test-set performance", save_p
 
     # Save the plot
     os.makedirs(save_path, exist_ok=True)
-    filename = "arima_test_predictions.html"
+    # Use book-specific filename if ISBN is available
+    if book_isbn:
+        filename = f"arima_test_predictions_{book_isbn}.html"
+    else:
+        filename = "arima_test_predictions.html"
     filepath = os.path.join(save_path, filename)
     fig.write_html(filepath)
     print(f"Plot saved to: {filepath}")
@@ -288,8 +490,7 @@ def plot_arima_from_csv(csv_dir="arima_standalone_outputs", save_path="outputs",
 # 5.  CLI entry-point
 # ------------------------------------------------------------------ #
 if __name__ == "__main__":
-    PIPELINE_NAME = "book_sales_arima_pipeline"        # <- your pipeline
-    BOOK          = None                               # or e.g. "The Alchemist"
+    PIPELINE_NAME = "book_sales_arima_modeling_pipeline"  # <- your pipeline
     PLOTS_FOLDER  = "outputs/plots/interactive"        # interactive plots folder
     CSV_FOLDER    = "arima_standalone_outputs"         # CSV fallback folder
 
@@ -320,33 +521,55 @@ if __name__ == "__main__":
     # --------  Option 2: Fallback to ZenML artifacts  -------- #
     print("\n📋 Falling back to ZenML artifacts...")
     try:
+        # Use the latest run (which should have the datetime index fixes)
         artefacts, run = load_latest_run_outputs(PIPELINE_NAME)
         print(f"✅ Loaded artefacts from run: {run.name}")
+        print(f"📅 Run executed: {run.created}")
 
         # List available artifacts for debugging
         list_available_artifacts(artefacts)
 
-        # --------  Option A: use stored test-set predictions  -------- #
-        try:
-            plot_test_predictions(artefacts,
-                title="SARIMA – test-set predictions (ZenML artifacts)",
-                save_path=PLOTS_FOLDER)
-            print("✅ Successfully plotted from ZenML artifacts!")
-        except Exception as e:
-            print(f"❌ Error plotting test predictions: {e}")
-            print("This might be due to changes in artifact structure.")
-
-        # --------  Option B: extract train/test data manually  -------- #
-        try:
-            print("\nExtracting train/test data from separate artifacts...")
-            train, test, model, book_name = extract_objects(artefacts, BOOK)
-            print(f"Successfully extracted data for book: {book_name}")
-            print(f"Train data shape: {train.shape}")
-            print(f"Test data shape: {test.shape}")
-            print(f"Model type: {type(model).__name__}")
-        except Exception as e:
-            print(f"Error extracting objects: {e}")
-            print("Please check that the pipeline has been run with the updated structure.")
+        # --------  Get selected ISBNs from pipeline  -------- #
+        selected_isbns = get_selected_isbns_from_artifacts(artefacts)
+        if selected_isbns:
+            print(f"\n📚 Found {len(selected_isbns)} books from pipeline: {selected_isbns}")
+            
+            # Generate predictions for each book
+            for i, isbn in enumerate(selected_isbns):
+                print(f"\n--- Processing book {i+1}/{len(selected_isbns)}: ISBN {isbn} ---")
+                
+                try:
+                    # Extract data for this specific book
+                    train, test, model, book_isbn, book_title = extract_objects(artefacts, isbn)
+                    print(f"📖 Book: {book_title} (ISBN: {book_isbn})")
+                    print(f"📊 Train data shape: {train.shape}")
+                    print(f"📊 Test data shape: {test.shape}")
+                    print(f"🤖 Model type: {type(model).__name__}")
+                    
+                    # Plot predictions for this book
+                    plot_test_predictions(artefacts, 
+                        book_isbn=isbn,
+                        title=f"SARIMA – {book_title} predictions (ZenML artifacts)",
+                        save_path=PLOTS_FOLDER)
+                    print(f"✅ Successfully plotted predictions for {book_title}!")
+                    
+                except Exception as e:
+                    print(f"❌ Error processing ISBN {isbn}: {e}")
+                    continue
+                    
+        else:
+            print("⚠️  Could not find selected ISBNs from pipeline artifacts")
+            # Fallback: try to extract any available book data
+            try:
+                train, test, model, book_isbn, book_title = extract_objects(artefacts)
+                print(f"📖 Fallback: Found data for {book_title} (ISBN: {book_isbn})")
+                plot_test_predictions(artefacts,
+                    book_isbn=book_isbn,
+                    title=f"SARIMA – {book_title} predictions (ZenML artifacts)",
+                    save_path=PLOTS_FOLDER)
+                print("✅ Successfully plotted fallback predictions!")
+            except Exception as e:
+                print(f"❌ Error with fallback extraction: {e}")
 
     except Exception as e:
         print(f"❌ Failed to load ZenML artifacts: {e}")

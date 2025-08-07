@@ -1,0 +1,77 @@
+  - ZenML Dashboard: http://127.0.0.1:8237 (pipeline runs, steps, stacks)
+  - MLflow UI: http://127.0.0.1:5001 (experiment tracking, models)
+
+zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com
+
+The email address you see is the unique identifier for that service account. Think of it as the account's official name within all of Google Cloud.
+
+What to Do With the Email Address 📧
+You'll use that full email address (zenml-pipeline-runner@...) in two key places to give your pipeline permissions:
+
+1. Share Your Google Sheets With It
+
+Your pipeline needs permission to read your data. You grant this by sharing your Google Sheets with the service account, just like you would with a person.
+
+Action: Go to each of your Google Sheets, click the Share button, and paste the entire service account email address. Give it Viewer access.
+
+This tells Google Sheets, "The application identified by this email is allowed to read this file."
+
+2. Configure Your ZenML Orchestrator
+
+You need to tell Vertex AI to run your pipeline as this service account.
+
+Action: Use the zenml orchestrator update command and paste the email address there.
+
+Bash
+# Paste the full email address you copied here
+zenml orchestrator update your_orchestrator_name --service_account="zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com"
+This tells ZenML, "When you send a job to Vertex AI, make sure it runs with the identity and permissions of this service account." 🚀
+
+----Uploaded csv files to Google drive, shared with vertexAI as googlesheets,
+
+TO DO:
+
+Because your code uses the gspread library within functions like get_isbn_data(), it's specifically designed to read data directly from Google Sheet files 📄 located in a Google Drive.
+
+It Doesn't Have to Be Google Sheets
+While using Google Sheets is perfectly fine for getting started, it's important to know that Vertex AI and ZenML can handle data from many other sources. As your project grows, you might want to consider more scalable options.
+
+The standard and most common approach for cloud pipelines is to store data in Google Cloud Storage (GCS).
+
+Common Data Storage Options:
+
+Google Cloud Storage (GCS) ☁️: This is the most popular choice. You would upload your raw data as files (like .csv, .parquet, or .json) into a GCS bucket. Your pipeline would then be configured to read directly from that bucket. This is generally better for versioning, scalability, and performance.
+
+Google BigQuery 🗃️: If you have very large, structured datasets, you could store them in BigQuery and query the data directly from your pipeline using SQL. This is extremely powerful for big data applications.
+
+Cloud SQL or other Databases: Your pipeline could also connect directly to a cloud-hosted database to fetch its data.
+
+For now, sticking with Google Sheets is perfectly fine to get your authentication and pipeline working. Just know that you have more robust options available as you scale up.
+
+-----
+
+# Switch to your local stack
+zenml stack set default
+
+# Now run your pipeline script as usual
+python your_pipeline_script.py
+
+-----
+
+# Switch to your cloud stack (replace with your stack's name)
+zenml stack set vertex_stack
+
+# Run the EXACT SAME pipeline script
+python your_pipeline_script.py
+
+-- for status:/which stack active and running
+
+zenml stack get
+
+########## When deploying to cloud: ###########
+
+# Activate the cloud stack
+zenml stack set vertex_stack
+
+# Run your pipeline script
+python your_pipeline_script.py

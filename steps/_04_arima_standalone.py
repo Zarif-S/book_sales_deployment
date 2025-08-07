@@ -23,8 +23,12 @@ def load_individual_book_data(book_isbn: str):
     if not os.path.exists(test_path):
         raise FileNotFoundError(f"Book test data not found: {test_path}")
 
-    train_data = pd.read_csv(train_path, index_col=0, parse_dates=True)
-    test_data = pd.read_csv(test_path, index_col=0, parse_dates=True)
+    train_data = pd.read_csv(train_path, parse_dates=['End Date'])
+    test_data = pd.read_csv(test_path, parse_dates=['End Date'])
+    
+    # Set the End Date as index for proper time series handling
+    train_data = train_data.set_index('End Date').sort_index()
+    test_data = test_data.set_index('End Date').sort_index()
 
     print(f"✅ Loaded train data: {train_data.shape}")
     print(f"✅ Loaded test data: {test_data.shape}")
@@ -113,17 +117,17 @@ def evaluate_forecast(y_true: np.ndarray, y_pred: np.ndarray) -> Dict[str, float
 
 def objective(trial, train_series: pd.Series, test_series: pd.Series) -> float:
     """Optuna objective function to minimize RMSE."""
-    p = trial.suggest_int("p", 0, 2)
-    d = trial.suggest_int("d", 1, 2)
-    q = trial.suggest_int("q", 2, 4)
+    p = trial.suggest_int("p", 0, 3)
+    d = trial.suggest_int("d", 0, 2)
+    q = trial.suggest_int("q", 0, 4)
     P = trial.suggest_int("P", 0, 2)
     D = trial.suggest_int("D", 0, 1)
-    Q = trial.suggest_int("Q", 1, 3)
+    Q = trial.suggest_int("Q", 0, 3)
     s = 52
 
     try:
         model = SARIMAX(train_series, order=(p, d, q), seasonal_order=(P, D, Q, s))
-        fitted = model.fit(disp=False, maxiter=50)
+        fitted = model.fit(disp=False, maxiter=200)
         forecast = fitted.forecast(steps=len(test_series))
         metrics = evaluate_forecast(test_series.values, forecast.values)
         return metrics["rmse"]
@@ -154,11 +158,15 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
         )
 
         print(f"📊 Found {len(study.trials)} existing trials")
-        if len(study.trials) > 0:
+        
+        # Check if there are any completed trials with valid values
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        if completed_trials:
             print(f"💾 Best value so far: {study.best_value:.4f}")
-
-        # Early stopping variables
-        best_value = study.best_value if study.trials else float('inf')
+            best_value = study.best_value
+        else:
+            print("🔄 No completed trials found, starting fresh optimization")
+            best_value = float('inf')
         trials_without_improvement = 0
         last_improvement_trial = len(study.trials)
 
@@ -172,6 +180,11 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
                 self.trials_without_improvement = 0
 
             def __call__(self, study, trial):
+                # Only check best_value if there are completed trials
+                completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+                if not completed_trials:
+                    return  # Skip early stopping check if no completed trials
+                    
                 current_best = study.best_value
                 total_trials = len(study.trials)
 
@@ -209,6 +222,20 @@ def run_optuna_optimization_with_early_stopping(train_series: pd.Series, test_se
 
         print(f"✅ Optimization completed:")
         print(f"   • Total trials: {total_trials}")
+        
+        # Check if optimization was successful
+        completed_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+        if not completed_trials:
+            print(f"   • No successful trials completed")
+            return {
+                "best_params": {"p": 1, "d": 1, "q": 2, "P": 1, "D": 0, "Q": 1},
+                "best_value": float("inf"),
+                "n_trials": total_trials,
+                "study_name": study_name,
+                "storage_url": storage_url,
+                "error": "No trials completed successfully"
+            }
+        
         print(f"   • Best value: {study.best_value:.4f}")
         print(f"   • Trials since last improvement: {improvement_trials}")
 
@@ -238,7 +265,7 @@ def run_optuna_optimization(train_series: pd.Series, test_series: pd.Series,
     """Legacy wrapper - now uses smart early stopping by default."""
     return run_optuna_optimization_with_early_stopping(
         train_series, test_series, n_trials, study_name,
-        patience=3, min_improvement=0.1, min_trials=10
+        patience=15, min_improvement=0.1, min_trials=25
     )
 
 def train_final_arima_model(series: pd.Series, best_params: Dict[str, int]):
@@ -248,7 +275,7 @@ def train_final_arima_model(series: pd.Series, best_params: Dict[str, int]):
     s = 52
 
     model = SARIMAX(series, order=(p, d, q), seasonal_order=(P, D, Q, s))
-    fitted_model = model.fit(disp=False, maxiter=100)
+    fitted_model = model.fit(disp=False, maxiter=200)
 
     return fitted_model
 
@@ -275,6 +302,13 @@ def train_individual_book_arima(book_isbn: str, output_dir: str = "outputs/arima
     print(f"🚀 Training individual ARIMA model for book ISBN: {book_isbn}")
     
     try:
+        # Initialize MLflow logging for individual book (if available)
+        try:
+            import mlflow
+            mlflow_available = True
+        except ImportError:
+            mlflow_available = False
+            print("MLflow not available for individual book logging")
         # Load individual book data
         train_data, test_data = load_individual_book_data(book_isbn)
         
@@ -305,6 +339,36 @@ def train_individual_book_arima(book_isbn: str, output_dir: str = "outputs/arima
         print(f"📈 Evaluation metrics for {book_isbn}:")
         for metric, value in eval_metrics.items():
             print(f"   {metric.upper()}: {value:.4f}")
+        
+        # Log to MLflow if available
+        if mlflow_available:
+            try:
+                # Log parameters for this book
+                mlflow.log_params({
+                    f"book_isbn": book_isbn,
+                    f"p": best_params.get('p', 0),
+                    f"d": best_params.get('d', 0),
+                    f"q": best_params.get('q', 0),
+                    f"P": best_params.get('P', 0),
+                    f"D": best_params.get('D', 0),
+                    f"Q": best_params.get('Q', 0),
+                    f"n_trials": optimization_results.get("n_trials", 0),
+                    f"train_length": len(train_series),
+                    f"test_length": len(test_series)
+                })
+                
+                # Log evaluation metrics
+                mlflow.log_metrics({
+                    f"mae": eval_metrics.get('mae', 0),
+                    f"rmse": eval_metrics.get('rmse', 0),
+                    f"mape": eval_metrics.get('mape', 0),
+                    f"optuna_best_value": optimization_results.get("best_value", 0)
+                })
+                
+                print(f"✅ Logged metrics to MLflow for {book_isbn}")
+                
+            except Exception as e:
+                print(f"⚠️ Failed to log to MLflow for {book_isbn}: {e}")
         
         # Save model artifacts
         os.makedirs(output_dir, exist_ok=True)
@@ -340,6 +404,16 @@ def train_individual_book_arima(book_isbn: str, output_dir: str = "outputs/arima
         results_path = os.path.join(output_dir, f"results_{book_isbn}.json")
         with open(results_path, 'w') as f:
             json.dump(results, f, indent=2, default=str)
+        
+        # Log artifacts to MLflow if available
+        if mlflow_available:
+            try:
+                mlflow.log_artifact(model_path, "models")
+                mlflow.log_artifact(predictions_path, "predictions")
+                mlflow.log_artifact(results_path, "results")
+                print(f"✅ Logged artifacts to MLflow for {book_isbn}")
+            except Exception as e:
+                print(f"⚠️ Failed to log artifacts to MLflow for {book_isbn}: {e}")
         
         print(f"✅ Successfully trained ARIMA model for {book_isbn}")
         print(f"📁 Artifacts saved to: {output_dir}")
