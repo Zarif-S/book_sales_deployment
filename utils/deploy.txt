@@ -75,3 +75,8 @@ zenml stack set vertex_stack
 
 # Run your pipeline script
 python your_pipeline_script.py
+
+#### Batch Feeding & Dynamic Data Prep with Smart Retraining Plan https://chatgpt.com/share/68951be4-a4a4-8006-ab5e-c07cbfa9ff08 #####
+
+## useful commands
+python3 pipelines/zenml_pipeline.py && python3 scripts/arima_forecast_load_artefacts.py

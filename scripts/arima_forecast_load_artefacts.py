@@ -133,7 +133,6 @@ def extract_objects(artefacts, book_isbn: str | None = None):
                         # Load model metadata to restore datetime context
                         model_datetime_context = None
                         try:
-                            import mlflow.models
                             model_metadata = mlflow.models.Model.load(model_path).metadata
                             if model_metadata:
                                 train_freq = model_metadata.get('train_freq')

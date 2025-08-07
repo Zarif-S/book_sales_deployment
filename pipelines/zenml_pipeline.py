@@ -311,8 +311,12 @@ def train_models_from_consolidated_data(
             book_output_dir = os.path.join(output_dir, f'book_{book_isbn}')
             os.makedirs(book_output_dir, exist_ok=True)
 
-            # Save model with MLflow
-            model_path = os.path.join(book_output_dir, f'arima_model_{book_isbn}')
+            # Generate timestamp for unique model paths
+            import datetime
+            timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+            
+            # Save model with MLflow (with timestamp to avoid conflicts)
+            model_path = os.path.join(book_output_dir, f'arima_model_{book_isbn}_{timestamp}')
             
             # Create model signature and input example for MLflow
             try:
@@ -345,13 +349,26 @@ def train_models_from_consolidated_data(
                 
                 logger.info(f"✅ Saved MLflow model to: {model_path}")
                 
+                # Register model in MLflow Model Registry for production deployment
+                try:
+                    model_name = f"arima_book_{book_isbn}"
+                    registered_model = mlflow.register_model(
+                        model_uri=f"file://{os.path.abspath(model_path)}",
+                        name=model_name
+                    )
+                    logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} in MLflow Model Registry")
+                except Exception as registry_error:
+                    logger.warning(f"⚠️ Model registry failed (model still saved): {registry_error}")
+                    logger.info(f"📁 Model available at filesystem path: {model_path}")
+                
             except Exception as e:
                 logger.warning(f"MLflow save failed, falling back to pickle: {e}")
-                # Fallback to pickle if MLflow fails
-                model_path_pkl = os.path.join(book_output_dir, f'arima_model_{book_isbn}.pkl')
+                # Fallback to pickle if MLflow fails (with timestamp)
+                model_path_pkl = os.path.join(book_output_dir, f'arima_model_{book_isbn}_{timestamp}.pkl')
                 with open(model_path_pkl, 'wb') as f:
                     pickle.dump(final_model, f)
                 model_path = model_path_pkl
+                logger.info(f"📁 Saved pickle model to: {model_path_pkl}")
 
             # Save results
             results_path = os.path.join(book_output_dir, f'results_{book_isbn}.json')
@@ -382,33 +399,35 @@ def train_models_from_consolidated_data(
         
         # Try MLflow logging after training completes (success or failure)
         # This ensures MLflow logging doesn't interfere with model training
+        # Use MLflow tags instead of parameters to avoid conflicts within the same run
         if book_isbn in book_results and "error" not in book_results[book_isbn]:
             try:
-                # Use book-specific prefixed parameters to avoid conflicts with ZenML's experiment tracker
-                book_params = {
-                    f"{book_isbn}_book_isbn": book_isbn,
-                    f"{book_isbn}_model_type": "SARIMA",
-                    f"{book_isbn}_p": book_results[book_isbn]['best_params']['p'],
-                    f"{book_isbn}_d": book_results[book_isbn]['best_params']['d'],
-                    f"{book_isbn}_q": book_results[book_isbn]['best_params']['q'],
-                    f"{book_isbn}_P": book_results[book_isbn]['best_params']['P'],
-                    f"{book_isbn}_D": book_results[book_isbn]['best_params']['D'],
-                    f"{book_isbn}_Q": book_results[book_isbn]['best_params']['Q'],
-                    f"{book_isbn}_seasonal_period": 52,
-                    f"{book_isbn}_optimization_method": "optuna"
+                # Use tags for book-specific metadata (no conflicts like parameters)
+                book_tags = {
+                    f"book_{book_isbn}_isbn": book_isbn,
+                    f"book_{book_isbn}_model_type": "SARIMA",
+                    f"book_{book_isbn}_p": str(book_results[book_isbn]['best_params']['p']),
+                    f"book_{book_isbn}_d": str(book_results[book_isbn]['best_params']['d']),
+                    f"book_{book_isbn}_q": str(book_results[book_isbn]['best_params']['q']),
+                    f"book_{book_isbn}_P": str(book_results[book_isbn]['best_params']['P']),
+                    f"book_{book_isbn}_D": str(book_results[book_isbn]['best_params']['D']),
+                    f"book_{book_isbn}_Q": str(book_results[book_isbn]['best_params']['Q']),
+                    f"book_{book_isbn}_seasonal_period": "52",
+                    f"book_{book_isbn}_optimization_method": "optuna"
                 }
                 
+                # Use prefixed metrics to avoid conflicts
                 book_metrics = {
-                    f"{book_isbn}_mae": book_results[book_isbn]['evaluation_metrics'].get('mae', 0),
-                    f"{book_isbn}_rmse": book_results[book_isbn]['evaluation_metrics'].get('rmse', 0),
-                    f"{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0)
+                    f"book_{book_isbn}_mae": book_results[book_isbn]['evaluation_metrics'].get('mae', 0),
+                    f"book_{book_isbn}_rmse": book_results[book_isbn]['evaluation_metrics'].get('rmse', 0),
+                    f"book_{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0)
                 }
                 
-                # Log to the main ZenML-managed MLflow run with prefixed names
-                mlflow.log_params(book_params)
+                # Log tags (no conflicts) and metrics to main experiment
+                mlflow.set_tags(book_tags)
                 mlflow.log_metrics(book_metrics)
                 
-                logger.info(f"📊 Logged parameters and metrics to MLflow for {book_isbn}")
+                logger.info(f"📊 Logged tags and metrics to main experiment for {book_isbn}")
                 
             except Exception as mlflow_error:
                 logger.warning(f"⚠️ MLflow logging failed for {book_isbn}: {mlflow_error}")
