@@ -101,7 +101,7 @@ def train_models_from_consolidated_data(
 
     for book_isbn in book_isbns:
         logger.info(f"Training model for ISBN: {book_isbn}")
-        
+
         # Reset evaluation_metrics for each book to avoid reusing metrics from previous books
         evaluation_metrics = None
 
@@ -235,7 +235,7 @@ def train_models_from_consolidated_data(
                 logger.info(f"Starting Optuna optimization for {book_isbn}")
                 optimization_results = run_optuna_optimization_with_early_stopping(
                     train_series, test_series, n_trials, book_study_name,
-                    patience=3, min_improvement=0.5, min_trials=5
+                    patience=3, min_improvement=0.5, min_trials=3
                 )
 
                 # Validate optimization results
@@ -314,20 +314,20 @@ def train_models_from_consolidated_data(
             # Generate timestamp for unique model paths
             import datetime
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            
+
             # Save model with MLflow (with timestamp to avoid conflicts)
             model_path = os.path.join(book_output_dir, f'arima_model_{book_isbn}_{timestamp}')
-            
+
             # Create model signature and input example for MLflow
             try:
                 import mlflow.models.signature as signature
                 from mlflow.types.schema import Schema, ColSpec
-                
+
                 # Create input/output signature for SARIMA model
                 input_schema = Schema([ColSpec("double", "steps")])
                 output_schema = Schema([ColSpec("double", "forecast")])
                 model_signature = signature.ModelSignature(inputs=input_schema, outputs=output_schema)
-                
+
                 # Save additional context for model loading
                 model_info = {
                     "isbn": book_isbn,
@@ -337,7 +337,7 @@ def train_models_from_consolidated_data(
                     "model_params": best_params,
                     "training_data_length": len(train_series)
                 }
-                
+
                 # Save with MLflow
                 mlflow.statsmodels.save_model(
                     statsmodels_model=final_model,
@@ -346,9 +346,9 @@ def train_models_from_consolidated_data(
                     input_example=pd.DataFrame({"steps": [len(test_series)]}),
                     metadata=model_info
                 )
-                
+
                 logger.info(f"✅ Saved MLflow model to: {model_path}")
-                
+
                 # Register model in MLflow Model Registry for production deployment
                 try:
                     model_name = f"arima_book_{book_isbn}"
@@ -360,7 +360,7 @@ def train_models_from_consolidated_data(
                 except Exception as registry_error:
                     logger.warning(f"⚠️ Model registry failed (model still saved): {registry_error}")
                     logger.info(f"📁 Model available at filesystem path: {model_path}")
-                
+
             except Exception as e:
                 logger.warning(f"MLflow save failed, falling back to pickle: {e}")
                 # Fallback to pickle if MLflow fails (with timestamp)
@@ -396,47 +396,36 @@ def train_models_from_consolidated_data(
             logger.error(f"❌ Training failed for {book_isbn}: {str(e)}")
             book_results[book_isbn] = {"error": str(e)}
             failed_models += 1
-        
-        # Log book-specific metrics and tags to the main ZenML run
+
+        # Create individual sequential MLflow run for each book (avoids ZenML conflicts)
         if book_isbn in book_results and "error" not in book_results[book_isbn]:
             try:
                 # Get book title from train data
                 book_title_rows = train_data[train_data['ISBN'] == book_isbn]['Title']
                 book_title = book_title_rows.iloc[0] if not book_title_rows.empty else f"Book_{book_isbn}"
-                
-                # Use prefixed tags for book-specific information (avoid parameter conflicts)
-                book_tags = {
-                    f"book_{book_isbn}_isbn": book_isbn,
-                    f"book_{book_isbn}_title": book_title,
-                    f"book_{book_isbn}_model_type": "SARIMA",
-                    f"book_{book_isbn}_p": str(book_results[book_isbn]['best_params']['p']),
-                    f"book_{book_isbn}_d": str(book_results[book_isbn]['best_params']['d']),
-                    f"book_{book_isbn}_q": str(book_results[book_isbn]['best_params']['q']),
-                    f"book_{book_isbn}_P": str(book_results[book_isbn]['best_params']['P']),
-                    f"book_{book_isbn}_D": str(book_results[book_isbn]['best_params']['D']),
-                    f"book_{book_isbn}_Q": str(book_results[book_isbn]['best_params']['Q']),
-                    f"book_{book_isbn}_seasonal_period": "52",
-                    f"book_{book_isbn}_optimization_method": "optuna"
+
+                logger.info(f"📖 Scheduling individual MLflow run for {book_isbn} post-pipeline")
+
+                # Store book run data for later processing (after main pipeline run completes)
+                if not hasattr(train_models_from_consolidated_data, '_book_run_data'):
+                    train_models_from_consolidated_data._book_run_data = []
+
+                book_run_data = {
+                    'book_isbn': book_isbn,
+                    'book_title': book_title,
+                    'best_params': book_results[book_isbn]['best_params'],
+                    'evaluation_metrics': book_results[book_isbn]['evaluation_metrics'],
+                    'optimization_results': book_results[book_isbn].get('optimization_results', {}),
+                    'train_series_length': book_results[book_isbn].get('train_series_length', 0),
+                    'test_series_length': book_results[book_isbn].get('test_series_length', 0)
                 }
-                
-                # Use prefixed metrics for book-specific performance
-                book_metrics = {
-                    f"book_{book_isbn}_mae": book_results[book_isbn]['evaluation_metrics'].get('mae', 0),
-                    f"book_{book_isbn}_rmse": book_results[book_isbn]['evaluation_metrics'].get('rmse', 0),
-                    f"book_{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0),
-                    f"book_{book_isbn}_optuna_best_value": book_results[book_isbn].get('optimization_results', {}).get('best_value', 0),
-                    f"book_{book_isbn}_optuna_trials": book_results[book_isbn].get('optimization_results', {}).get('n_trials', 0)
-                }
-                
-                # Log to the main ZenML run
-                mlflow.set_tags(book_tags)
-                mlflow.log_metrics(book_metrics)
-                
-                logger.info(f"📊 Logged tags and metrics for {book_isbn} to main experiment")
-                
-            except Exception as mlflow_error:
-                logger.warning(f"⚠️ MLflow logging failed for {book_isbn}: {mlflow_error}")
-                logger.info(f"📊 Model training was successful, MLflow logging is optional")
+
+                train_models_from_consolidated_data._book_run_data.append(book_run_data)
+                logger.info(f"📊 Stored run data for {book_isbn} - will create individual run after pipeline")
+
+            except Exception as storage_error:
+                logger.warning(f"⚠️ Failed to store run data for {book_isbn}: {storage_error}")
+                logger.info(f"📊 Model training was successful, individual run creation is optional")
 
     # Return results in same format as original function
     return {
@@ -805,14 +794,14 @@ def create_train_test_splits_step(
                     if 'End Date' in df.columns:
                         df.set_index(pd.to_datetime(df['End Date']), inplace=True)
                         df.drop(columns=['End Date'], inplace=True)
-            
+
             for i, df in enumerate(consolidated_test_data):
                 if not pd.api.types.is_datetime64_any_dtype(df.index):
                     logger.warning(f"Test data book {i} missing datetime index, attempting to restore from 'End Date'")
                     if 'End Date' in df.columns:
                         df.set_index(pd.to_datetime(df['End Date']), inplace=True)
                         df.drop(columns=['End Date'], inplace=True)
-            
+
             train_df = pd.concat(consolidated_train_data, ignore_index=False)
             test_df = pd.concat(consolidated_test_data, ignore_index=False)
             logger.info(f"Created consolidated artifacts: train_df shape {train_df.shape}, test_df shape {test_df.shape}")
@@ -894,7 +883,7 @@ def train_individual_arima_models_step(
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
     # Set MLflow experiment name for this pipeline run
-    experiment_name = "book_sales_arima_modeling"
+    experiment_name = "book_sales_arima_modeling_v2"
     mlflow.set_experiment(experiment_name)
     logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
 
@@ -916,7 +905,7 @@ def train_individual_arima_models_step(
             "books": ",".join(selected_isbns),
             "output_directory": arima_output_dir
         })
-        
+
         # Train individual models using consolidated artifacts
         training_results = train_models_from_consolidated_data(
             train_data=train_data,
@@ -925,9 +914,9 @@ def train_individual_arima_models_step(
             output_dir=arima_output_dir,
             n_trials=n_trials
         )
-        
+
         # Log pipeline-level summary metrics using ZenML's experiment tracker
-        pipeline_success_rate = (training_results.get('successful_models', 0) / 
+        pipeline_success_rate = (training_results.get('successful_models', 0) /
                                training_results.get('total_books', 1) * 100)
         mlflow.log_metrics({
             "pipeline_success_rate": pipeline_success_rate,
@@ -935,8 +924,87 @@ def train_individual_arima_models_step(
             "successful_models": training_results.get('successful_models', 0),
             "failed_models": training_results.get('failed_models', 0)
         })
-        
+
+        # Add pipeline-level tags to distinguish parent run from individual book runs
+        mlflow.set_tags({
+            "run_type": "pipeline_summary",
+            "architecture": "hybrid_tracking",
+            "individual_runs_created": "true",
+            "books_processed": ",".join(selected_isbns),
+            "scalable_approach": "parent_child_runs"
+        })
+
         logger.info(f"📊 Logged pipeline summary to MLflow: {pipeline_success_rate:.1f}% success rate")
+
+        # Create individual MLflow runs for each book (post-pipeline to avoid ZenML conflicts)
+        if hasattr(train_models_from_consolidated_data, '_book_run_data'):
+            logger.info(f"🔄 Creating {len(train_models_from_consolidated_data._book_run_data)} individual book runs...")
+
+            # End the current ZenML MLflow run to avoid conflicts
+            try:
+                mlflow.end_run()
+                logger.info("✅ Ended ZenML MLflow run before creating individual runs")
+            except Exception as e:
+                logger.warning(f"⚠️ Could not end current MLflow run: {e}")
+
+            for book_data in train_models_from_consolidated_data._book_run_data:
+                try:
+                    import time
+                    clean_title = book_data['book_title'].replace(' ', '_').replace(',', '').replace("'", '').replace('.', '')
+                    book_run_name = f"book_{book_data['book_isbn']}_{clean_title[:15]}_{time.strftime('%H%M%S')}"
+
+                    # Create individual run outside ZenML context (sequential, not nested)
+                    with mlflow.start_run(run_name=book_run_name) as book_run:
+                        logger.info(f"📖 Created individual run for {book_data['book_isbn']}: {book_run.info.run_id}")
+
+                        try:
+                            # Log book-specific parameters (ensure no duplicates)
+                            params_to_log = {
+                                "isbn": book_data['book_isbn'],
+                                "title": book_data['book_title'],
+                                "model_type": "SARIMA",
+                                "arima_p": book_data['best_params']['p'],  # Use prefixes to avoid conflicts
+                                "arima_d": book_data['best_params']['d'],
+                                "arima_q": book_data['best_params']['q'],
+                                "seasonal_P": book_data['best_params']['P'],
+                                "seasonal_D": book_data['best_params']['D'],
+                                "seasonal_Q": book_data['best_params']['Q'],
+                                "seasonal_period": 52,
+                                "optimization_method": "optuna",
+                                "train_length": book_data['train_series_length'],
+                                "test_length": book_data['test_series_length']
+                            }
+                            mlflow.log_params(params_to_log)
+                        except Exception as param_error:
+                            logger.warning(f"⚠️ Failed to log parameters for {book_data['book_isbn']}: {param_error}")
+
+                        # Log evaluation metrics
+                        mlflow.log_metrics({
+                            "mae": book_data['evaluation_metrics'].get('mae', 0),
+                            "rmse": book_data['evaluation_metrics'].get('rmse', 0),
+                            "mape": book_data['evaluation_metrics'].get('mape', 0),
+                            "optuna_best_value": book_data['optimization_results'].get('best_value', 0),
+                            "optuna_trials": book_data['optimization_results'].get('n_trials', 0)
+                        })
+
+                        # Add tags for easy filtering
+                        mlflow.set_tags({
+                            "run_type": "individual_book",
+                            "isbn": book_data['book_isbn'],
+                            "model_architecture": "SARIMA",
+                            "optimization_engine": "optuna",
+                            "created_by": "post_pipeline_sequential"
+                        })
+
+                        logger.info(f"✅ Successfully logged individual run for {book_data['book_isbn']}")
+
+                except Exception as book_run_error:
+                    logger.warning(f"⚠️ Failed to create individual run for {book_data['book_isbn']}: {book_run_error}")
+
+            # Clean up the stored data
+            book_run_count = len(train_models_from_consolidated_data._book_run_data)
+            delattr(train_models_from_consolidated_data, '_book_run_data')
+            logger.info(f"🎉 Completed individual runs for {book_run_count} books")
 
         # Extract success metrics
         total_books = training_results.get('total_books', 0)
@@ -1120,7 +1188,7 @@ if __name__ == "__main__":
         use_seasonality_filter=False,
         max_seasonal_books=DEFAULT_MAX_SEASONAL_BOOKS,  # Not used when specific ISBNs provided
         train_arima=True,  # Enable ARIMA training
-        arima_n_trials=10  # Number of Optuna trials per book (reduced for ~10 min testing)
+        arima_n_trials=5  # Number of Optuna trials per book (reduced for ~10 min testing)
     )
 
     # Print results summary

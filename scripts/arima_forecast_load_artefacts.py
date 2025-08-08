@@ -116,12 +116,17 @@ def extract_objects(artefacts, book_isbn: str | None = None):
         for name, obj in d.items():
             if "arima_training_results" in name and isinstance(obj, dict):
                 arima_results = obj
+                print(f"📋 Found arima_training_results with keys: {list(obj.keys())}")
                 break
     
     if arima_results and 'book_results' in arima_results:
         book_results = arima_results['book_results']
+        print(f"📊 Found book_results with ISBNs: {list(book_results.keys())}")
+        print(f"🔍 Looking for ISBN: {book_isbn}")
         if book_isbn in book_results:
             book_result = book_results[book_isbn]
+            print(f"✅ Found training result for {book_isbn}")
+            print(f"📋 Result keys: {list(book_result.keys()) if isinstance(book_result, dict) else 'Not a dict'}")
             if 'model_path' in book_result and 'error' not in book_result:
                 model_path = book_result['model_path']
                 try:
