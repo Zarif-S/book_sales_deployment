@@ -6,6 +6,8 @@ from typing import Tuple, Annotated, Dict, List, Any
 import pickle
 import mlflow
 import mlflow.statsmodels
+import shutil
+import glob
 
 from zenml import step, pipeline
 from zenml.logger import get_logger
@@ -50,6 +52,89 @@ step_settings = {
 }
 
 # Helper functions for common operations
+def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
+    """
+    Cleanup old MLflow model artifacts to prevent disk space issues.
+    Keeps only the most recent `max_models_per_book` model.statsmodels files per book.
+    """
+    logger = get_logger(__name__)
+    
+    try:
+        # Find all model.statsmodels files and extract book information
+        model_files_by_book = {}
+        
+        for root, dirs, files in os.walk("mlruns"):
+            for file in files:
+                if file == "model.statsmodels":
+                    full_path = os.path.join(root, file)
+                    stat_info = os.stat(full_path)
+                    
+                    # Extract book ISBN from run name if available
+                    run_dir = full_path.split('/artifacts/')[0]
+                    book_isbn = None
+                    
+                    try:
+                        # Try to get run name from tags
+                        run_name_file = os.path.join(run_dir, 'tags', 'mlflow.runName')
+                        if os.path.exists(run_name_file):
+                            with open(run_name_file, 'r') as f:
+                                run_name = f.read().strip()
+                                # Extract ISBN from run name (format: book_9780123456789_Title_timestamp)
+                                if 'book_' in run_name:
+                                    parts = run_name.split('_')
+                                    for i, part in enumerate(parts):
+                                        if part == 'book' and i + 1 < len(parts):
+                                            potential_isbn = parts[i + 1]
+                                            if len(potential_isbn) == 13 and potential_isbn.isdigit():
+                                                book_isbn = potential_isbn
+                                                break
+                    except Exception:
+                        # If we can't extract from run name, skip this model
+                        continue
+                    
+                    if book_isbn:
+                        if book_isbn not in model_files_by_book:
+                            model_files_by_book[book_isbn] = []
+                        model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, run_dir))
+        
+        if not model_files_by_book:
+            logger.info("✅ Model cleanup: No models found with identifiable book ISBNs")
+            return
+        
+        total_removed = 0
+        total_size_removed = 0
+        
+        # Process each book separately
+        for book_isbn, book_models in model_files_by_book.items():
+            # Sort by modification time (newest first)
+            book_models.sort(key=lambda x: x[1], reverse=True)
+            
+            models_to_keep = len(book_models)
+            models_to_remove = max(0, len(book_models) - max_models_per_book)
+            
+            logger.info(f"📚 Book {book_isbn}: Found {len(book_models)} models, keeping {min(len(book_models), max_models_per_book)}")
+            
+            if models_to_remove > 0:
+                # Remove old models for this book (keep the newest max_models_per_book)
+                for file_path, mod_time, size, run_dir in book_models[max_models_per_book:]:
+                    try:
+                        if os.path.exists(run_dir):
+                            shutil.rmtree(run_dir)
+                            total_removed += 1
+                            total_size_removed += size
+                            logger.info(f"🗑️  Removed old model for {book_isbn}: {os.path.basename(run_dir)} ({size/(1024*1024):.1f}MB)")
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to remove {file_path}: {e}")
+        
+        if total_removed > 0:
+            size_mb = total_size_removed / (1024 * 1024)
+            logger.info(f"✅ Model cleanup completed: Removed {total_removed} old model runs ({size_mb:.1f}MB total)")
+        else:
+            logger.info(f"✅ Model cleanup: All models within per-book limit of {max_models_per_book}")
+        
+    except Exception as e:
+        logger.warning(f"⚠️  Model cleanup failed: {e}")
+
 def _add_step_metadata(output_name: str, metadata_dict: dict) -> None:
     """Helper function to add metadata to step outputs with error handling."""
     try:
@@ -79,7 +164,7 @@ def train_models_from_consolidated_data(
     test_data: pd.DataFrame,
     book_isbns: List[str],
     output_dir: str,
-    n_trials: int = 50
+    n_trials: int = 10
 ) -> Dict[str, Any]:
     """
     Train individual ARIMA models for each book using consolidated DataFrames.
@@ -235,7 +320,7 @@ def train_models_from_consolidated_data(
                 logger.info(f"Starting Optuna optimization for {book_isbn}")
                 optimization_results = run_optuna_optimization_with_early_stopping(
                     train_series, test_series, n_trials, book_study_name,
-                    patience=3, min_improvement=0.5, min_trials=3
+                    patience=3, min_improvement=0.5, min_trials=2
                 )
 
                 # Validate optimization results
@@ -361,6 +446,9 @@ def train_models_from_consolidated_data(
                     logger.warning(f"⚠️ Model registry failed (model still saved): {registry_error}")
                     logger.info(f"📁 Model available at filesystem path: {model_path}")
 
+                # Clean up old models to prevent disk space issues
+                cleanup_old_mlflow_models(max_models_per_book=2)
+
             except Exception as e:
                 logger.warning(f"MLflow save failed, falling back to pickle: {e}")
                 # Fallback to pickle if MLflow fails (with timestamp)
@@ -376,9 +464,12 @@ def train_models_from_consolidated_data(
                 'isbn': book_isbn,
                 'best_params': best_params,
                 'evaluation_metrics': evaluation_metrics,
+                'optimization_results': optimization_results,  # Store the full Optuna results
                 'model_path': model_path,
                 'train_shape': book_train_clean.shape,
-                'test_shape': book_test_clean.shape
+                'test_shape': book_test_clean.shape,
+                'train_series_length': len(train_series),  # Store actual series lengths
+                'test_series_length': len(test_series)
             }
 
             with open(results_path, 'w') as f:
@@ -417,7 +508,8 @@ def train_models_from_consolidated_data(
                     'evaluation_metrics': book_results[book_isbn]['evaluation_metrics'],
                     'optimization_results': book_results[book_isbn].get('optimization_results', {}),
                     'train_series_length': book_results[book_isbn].get('train_series_length', 0),
-                    'test_series_length': book_results[book_isbn].get('test_series_length', 0)
+                    'test_series_length': book_results[book_isbn].get('test_series_length', 0),
+                    'model_path': book_results[book_isbn].get('model_path', '')
                 }
 
                 train_models_from_consolidated_data._book_run_data.append(book_run_data)
@@ -874,11 +966,13 @@ def train_individual_arima_models_step(
     test_data: pd.DataFrame,
     selected_isbns: List[str],
     output_dir: str,
-    n_trials: int = 50
+    n_trials: int = 10
 ) -> Annotated[Dict[str, Any], ArtifactConfig(name="arima_training_results")]:
     """
     Train individual SARIMA models for each selected book using consolidated artifacts.
     """
+    import mlflow
+    
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
@@ -901,7 +995,7 @@ def train_individual_arima_models_step(
         mlflow.log_params({
             "pipeline_type": "arima_training",
             "total_books": len(selected_isbns),
-            "n_trials_per_book": n_trials,
+            "n_trials": n_trials,
             "books": ",".join(selected_isbns),
             "output_directory": arima_output_dir
         })
@@ -996,11 +1090,59 @@ def train_individual_arima_models_step(
                             "created_by": "post_pipeline_sequential"
                         })
 
+                        # Register the model to this individual run for production deployment
+                        try:
+                            if 'model_path' in book_data and book_data.get('model_path'):
+                                model_path = book_data['model_path']
+                                model_name = f"arima_book_{book_data['book_isbn']}"
+
+                                # Log the model as an artifact in this run first, then register
+                                import mlflow.statsmodels
+                                
+                                # Load the saved model and log it to this individual run
+                                try:
+                                    saved_model = mlflow.statsmodels.load_model(model_path)
+                                    
+                                    # Log the model to this run to create proper linkage
+                                    logged_model = mlflow.statsmodels.log_model(
+                                        statsmodels_model=saved_model,
+                                        artifact_path="model"
+                                    )
+                                    
+                                    # Use the run-based URI for registration (this creates the proper link)
+                                    model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
+                                    
+                                except Exception as load_error:
+                                    logger.warning(f"Could not load model for logging: {load_error}")
+                                    # Fallback to file-based registration
+                                    model_uri = f"file://{os.path.abspath(model_path)}"
+                                
+                                # Register model - now it will be properly linked to this run
+                                registered_model = mlflow.register_model(
+                                    model_uri=model_uri,
+                                    name=model_name,
+                                    tags={
+                                        "book_isbn": book_data['book_isbn'],
+                                        "book_title": book_data['book_title'],
+                                        "run_type": "individual_book",
+                                        "model_type": "SARIMA"
+                                    }
+                                )
+
+                                mlflow.log_param("registered_model_version", registered_model.version)
+                                logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} to individual run")
+
+                        except Exception as model_reg_error:
+                            logger.warning(f"⚠️ Model registration to individual run failed for {book_data['book_isbn']}: {model_reg_error}")
+
                         logger.info(f"✅ Successfully logged individual run for {book_data['book_isbn']}")
 
                 except Exception as book_run_error:
                     logger.warning(f"⚠️ Failed to create individual run for {book_data['book_isbn']}: {book_run_error}")
 
+            # Clean up old models after all individual runs are complete
+            cleanup_old_mlflow_models(max_models_per_book=2)
+            
             # Clean up the stored data
             book_run_count = len(train_models_from_consolidated_data._book_run_data)
             delattr(train_models_from_consolidated_data, '_book_run_data')
@@ -1022,13 +1164,13 @@ def train_individual_arima_models_step(
             "successful_models": str(successful_models),
             "failed_models": str(failed_models),
             "success_rate": f"{(successful_models/total_books*100):.1f}%" if total_books > 0 else "0%",
-            "n_trials_per_book": str(n_trials),
+            "n_trials": str(n_trials),
             "output_directory": arima_output_dir,
             "training_timestamp": pd.Timestamp.now().isoformat(),
             "early_stopping_enabled": "true",
             "patience": "5",
             "min_improvement": "0.1",
-            "min_trials": "15"
+            "min_trials": "10"
         }
 
         # Add individual book performance if available
@@ -1085,7 +1227,7 @@ def book_sales_arima_modeling_pipeline(
     use_seasonality_filter: bool = True,
     max_seasonal_books: int = 50,
     train_arima: bool = True,
-    arima_n_trials: int = 50
+    n_trials: int = 10
 ) -> Dict:
     """
     Complete book sales ARIMA modeling pipeline with Vertex AI deployment support.
@@ -1156,7 +1298,7 @@ def book_sales_arima_modeling_pipeline(
             test_data=test_data,
             selected_isbns=selected_isbns,
             output_dir=output_dir,
-            n_trials=arima_n_trials
+            n_trials=n_trials
         )
         logger.info("ARIMA training completed successfully")
     else:
@@ -1188,7 +1330,7 @@ if __name__ == "__main__":
         use_seasonality_filter=False,
         max_seasonal_books=DEFAULT_MAX_SEASONAL_BOOKS,  # Not used when specific ISBNs provided
         train_arima=True,  # Enable ARIMA training
-        arima_n_trials=5  # Number of Optuna trials per book (reduced for ~10 min testing)
+        n_trials=3  # Number of Optuna trials per book (reduced for ~10 min testing)
     )
 
     # Print results summary
