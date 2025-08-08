@@ -397,14 +397,17 @@ def train_models_from_consolidated_data(
             book_results[book_isbn] = {"error": str(e)}
             failed_models += 1
         
-        # Try MLflow logging after training completes (success or failure)
-        # This ensures MLflow logging doesn't interfere with model training
-        # Use MLflow tags instead of parameters to avoid conflicts within the same run
+        # Log book-specific metrics and tags to the main ZenML run
         if book_isbn in book_results and "error" not in book_results[book_isbn]:
             try:
-                # Use tags for book-specific metadata (no conflicts like parameters)
+                # Get book title from train data
+                book_title_rows = train_data[train_data['ISBN'] == book_isbn]['Title']
+                book_title = book_title_rows.iloc[0] if not book_title_rows.empty else f"Book_{book_isbn}"
+                
+                # Use prefixed tags for book-specific information (avoid parameter conflicts)
                 book_tags = {
                     f"book_{book_isbn}_isbn": book_isbn,
+                    f"book_{book_isbn}_title": book_title,
                     f"book_{book_isbn}_model_type": "SARIMA",
                     f"book_{book_isbn}_p": str(book_results[book_isbn]['best_params']['p']),
                     f"book_{book_isbn}_d": str(book_results[book_isbn]['best_params']['d']),
@@ -416,18 +419,20 @@ def train_models_from_consolidated_data(
                     f"book_{book_isbn}_optimization_method": "optuna"
                 }
                 
-                # Use prefixed metrics to avoid conflicts
+                # Use prefixed metrics for book-specific performance
                 book_metrics = {
                     f"book_{book_isbn}_mae": book_results[book_isbn]['evaluation_metrics'].get('mae', 0),
                     f"book_{book_isbn}_rmse": book_results[book_isbn]['evaluation_metrics'].get('rmse', 0),
-                    f"book_{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0)
+                    f"book_{book_isbn}_mape": book_results[book_isbn]['evaluation_metrics'].get('mape', 0),
+                    f"book_{book_isbn}_optuna_best_value": book_results[book_isbn].get('optimization_results', {}).get('best_value', 0),
+                    f"book_{book_isbn}_optuna_trials": book_results[book_isbn].get('optimization_results', {}).get('n_trials', 0)
                 }
                 
-                # Log tags (no conflicts) and metrics to main experiment
+                # Log to the main ZenML run
                 mlflow.set_tags(book_tags)
                 mlflow.log_metrics(book_metrics)
                 
-                logger.info(f"📊 Logged tags and metrics to main experiment for {book_isbn}")
+                logger.info(f"📊 Logged tags and metrics for {book_isbn} to main experiment")
                 
             except Exception as mlflow_error:
                 logger.warning(f"⚠️ MLflow logging failed for {book_isbn}: {mlflow_error}")
@@ -903,7 +908,7 @@ def train_individual_arima_models_step(
         logger.info(f"Output directory: {arima_output_dir}")
         logger.info(f"Optuna trials per book: {n_trials}")
 
-        # Log pipeline-level parameters (these apply to the overall training run)
+        # Log pipeline-level parameters using ZenML's experiment tracker
         mlflow.log_params({
             "pipeline_type": "arima_training",
             "total_books": len(selected_isbns),
@@ -921,7 +926,7 @@ def train_individual_arima_models_step(
             n_trials=n_trials
         )
         
-        # Log pipeline-level summary metrics
+        # Log pipeline-level summary metrics using ZenML's experiment tracker
         pipeline_success_rate = (training_results.get('successful_models', 0) / 
                                training_results.get('total_books', 1) * 100)
         mlflow.log_metrics({
