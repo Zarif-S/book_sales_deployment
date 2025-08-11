@@ -10,6 +10,8 @@ import shutil
 import glob
 
 from zenml import step, pipeline
+from zenml.integrations.constants import PYTORCH
+from zenml.config import DockerSettings
 from zenml.logger import get_logger
 from zenml import ArtifactConfig
 from zenml.steps import get_step_context
@@ -28,14 +30,20 @@ from steps._04_arima_standalone import train_multiple_books_arima
 # Import seasonality configuration
 import sys
 import os
+
+# Initialize logger first
+logger = get_logger(__name__)
+
 sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'outputs', 'seasonality_analysis'))
 try:
     from seasonality_config import SeasonalityConfig
 except ImportError:
     SeasonalityConfig = None
-    logger.warning("SeasonalityConfig not found. Seasonality filtering will be disabled.")
+    # logger.warning("SeasonalityConfig not found. Seasonality filtering will be disabled.")
 
-logger = get_logger(__name__)
+# Import optimization modules
+from config.arima_training_config import ARIMATrainingConfig, get_arima_config
+from utils.model_reuse import ModelRetrainDecisionEngine, create_retraining_engine
 
 # Constants
 DEFAULT_TEST_ISBNS = [
@@ -58,21 +66,21 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
     Keeps only the most recent `max_models_per_book` model.statsmodels files per book.
     """
     logger = get_logger(__name__)
-    
+
     try:
         # Find all model.statsmodels files and extract book information
         model_files_by_book = {}
-        
+
         for root, dirs, files in os.walk("mlruns"):
             for file in files:
                 if file == "model.statsmodels":
                     full_path = os.path.join(root, file)
                     stat_info = os.stat(full_path)
-                    
+
                     # Extract book ISBN from run name if available
                     run_dir = full_path.split('/artifacts/')[0]
                     book_isbn = None
-                    
+
                     try:
                         # Try to get run name from tags
                         run_name_file = os.path.join(run_dir, 'tags', 'mlflow.runName')
@@ -91,29 +99,29 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
                     except Exception:
                         # If we can't extract from run name, skip this model
                         continue
-                    
+
                     if book_isbn:
                         if book_isbn not in model_files_by_book:
                             model_files_by_book[book_isbn] = []
                         model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, run_dir))
-        
+
         if not model_files_by_book:
             logger.info("✅ Model cleanup: No models found with identifiable book ISBNs")
             return
-        
+
         total_removed = 0
         total_size_removed = 0
-        
+
         # Process each book separately
         for book_isbn, book_models in model_files_by_book.items():
             # Sort by modification time (newest first)
             book_models.sort(key=lambda x: x[1], reverse=True)
-            
+
             models_to_keep = len(book_models)
             models_to_remove = max(0, len(book_models) - max_models_per_book)
-            
+
             logger.info(f"📚 Book {book_isbn}: Found {len(book_models)} models, keeping {min(len(book_models), max_models_per_book)}")
-            
+
             if models_to_remove > 0:
                 # Remove old models for this book (keep the newest max_models_per_book)
                 for file_path, mod_time, size, run_dir in book_models[max_models_per_book:]:
@@ -125,13 +133,13 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
                             logger.info(f"🗑️  Removed old model for {book_isbn}: {os.path.basename(run_dir)} ({size/(1024*1024):.1f}MB)")
                     except Exception as e:
                         logger.warning(f"⚠️  Failed to remove {file_path}: {e}")
-        
+
         if total_removed > 0:
             size_mb = total_size_removed / (1024 * 1024)
             logger.info(f"✅ Model cleanup completed: Removed {total_removed} old model runs ({size_mb:.1f}MB total)")
         else:
             logger.info(f"✅ Model cleanup: All models within per-book limit of {max_models_per_book}")
-        
+
     except Exception as e:
         logger.warning(f"⚠️  Model cleanup failed: {e}")
 
@@ -164,11 +172,18 @@ def train_models_from_consolidated_data(
     test_data: pd.DataFrame,
     book_isbns: List[str],
     output_dir: str,
-    n_trials: int = 10
+    config: ARIMATrainingConfig = None,
+    n_trials: int = None  # Deprecated, use config.n_trials instead
 ) -> Dict[str, Any]:
     """
-    Train individual ARIMA models for each book using consolidated DataFrames.
+    Train individual ARIMA models for each book using consolidated DataFrames with smart retraining.
     This replaces the CSV file-based approach for Vertex AI deployment.
+
+    Enhanced with:
+    - Configuration-driven optimization parameters
+    - Smart model reuse to avoid unnecessary retraining
+    - Performance-based retraining triggers
+    - Comprehensive logging and monitoring
     """
     from steps._04_arima_standalone import (
         create_time_series_from_df,
@@ -177,15 +192,54 @@ def train_models_from_consolidated_data(
         evaluate_forecast
     )
 
-    logger.info(f"Training models for {len(book_isbns)} books using consolidated artifacts")
+    # Initialize configuration if not provided
+    if config is None:
+        config = get_arima_config()
+        logger.info(f"Using default configuration for environment: {config.environment}")
+
+    # Handle deprecated n_trials parameter
+    if n_trials is not None:
+        logger.warning("Parameter 'n_trials' is deprecated, use config.n_trials instead")
+        if config.n_trials != n_trials:
+            logger.info(f"Overriding config.n_trials ({config.n_trials}) with provided value ({n_trials})")
+            config.n_trials = n_trials
+
+    # Log configuration
+    config.log_configuration(logger)
+
+    # Initialize model retraining decision engine
+    retraining_engine = create_retraining_engine(config, output_dir)
+
+    logger.info(f"🚀 Training models for {len(book_isbns)} books using consolidated artifacts")
+    logger.info(f"📊 Configuration: {config.environment} mode, {config.n_trials} trials, force_retrain={config.force_retrain}")
 
     total_books = len(book_isbns)
     successful_models = 0
     failed_models = 0
+    reused_models = 0
     book_results = {}
 
     for book_isbn in book_isbns:
-        logger.info(f"Training model for ISBN: {book_isbn}")
+        logger.info(f"📚 Processing ISBN: {book_isbn}")
+
+        # Check if retraining is needed using smart decision engine
+        should_retrain, reason, existing_model = retraining_engine.should_retrain_model(
+            book_isbn, train_data, test_data
+        )
+
+        # Log retraining decision
+        retraining_engine.log_retraining_decision(book_isbn, should_retrain, reason, existing_model)
+
+        if not should_retrain and existing_model:
+            # Reuse existing model
+            logger.info(f"♻️  Reusing existing model for {book_isbn}: {reason}")
+            book_results[book_isbn] = retraining_engine.load_existing_model_results(existing_model)
+            successful_models += 1
+            reused_models += 1
+            continue
+
+        # Proceed with training new model
+        logger.info(f"🔄 Training new model for {book_isbn}: {reason}")
 
         # Reset evaluation_metrics for each book to avoid reusing metrics from previous books
         evaluation_metrics = None
@@ -265,8 +319,8 @@ def train_models_from_consolidated_data(
                 except Exception as e:
                     logger.warning(f"  Suggested params {i+1}: {params} → Failed: {e}")
 
-            # Optimize hyperparameters with Optuna (using book-specific study name and seeding)
-            logger.info(f"Starting Optuna optimization for {book_isbn} (with parameter seeding)")
+            # Optimize hyperparameters with Optuna using configuration-driven parameters
+            logger.info(f"Starting Optuna optimization for {book_isbn} (config-driven)")
 
             # Use timestamp for unique study names to avoid database corruption
             import datetime
@@ -277,27 +331,26 @@ def train_models_from_consolidated_data(
             import optuna
             from steps._04_arima_standalone import objective
 
-            # Create/load study with environment-based configuration
-            deployment_env = os.getenv('DEPLOYMENT_ENV', 'development')
+            # Get storage configuration from config
+            storage_config = config.get_optuna_storage_config()
 
-            if deployment_env.lower() == 'production':
+            if storage_config['storage_type'] == 'memory':
                 # Production: Use in-memory storage for reliability and speed
-                logger.info(f"Using in-memory Optuna storage (production mode)")
+                logger.info(f"Using in-memory Optuna storage ({config.environment} mode)")
                 study = optuna.create_study(
                     study_name=book_study_name,
                     direction="minimize"
                 )
             else:
-                # Development: Use SQLite storage for persistence and debugging
-                logger.info(f"Using SQLite Optuna storage (development mode)")
-                storage_dir = os.path.expanduser("~/zenml_optuna_storage")
-                os.makedirs(storage_dir, exist_ok=True)
+                # Development/testing: Use SQLite storage for persistence and debugging
+                logger.info(f"Using SQLite Optuna storage ({config.environment} mode)")
+                storage_dir = storage_config['storage_dir']
                 storage_url = f"sqlite:///{os.path.join(storage_dir, f'{book_study_name}.db')}"
 
                 study = optuna.create_study(
                     study_name=book_study_name,
                     storage=storage_url,
-                    load_if_exists=True,
+                    load_if_exists=storage_config['load_if_exists'],
                     direction="minimize"
                 )
 
@@ -317,10 +370,11 @@ def train_models_from_consolidated_data(
             optuna_best_rmse = float('inf')
 
             try:
-                logger.info(f"Starting Optuna optimization for {book_isbn}")
+                logger.info(f"Starting Optuna optimization for {book_isbn} with config parameters")
+                logger.info(f"  Trials: {config.n_trials}, Patience: {config.patience}, Min improvement: {config.min_improvement}")
                 optimization_results = run_optuna_optimization_with_early_stopping(
-                    train_series, test_series, n_trials, book_study_name,
-                    patience=3, min_improvement=0.5, min_trials=2
+                    train_series, test_series, config.n_trials, book_study_name,
+                    patience=config.patience, min_improvement=config.min_improvement, min_trials=config.min_trials
                 )
 
                 # Validate optimization results
@@ -478,6 +532,25 @@ def train_models_from_consolidated_data(
             book_results[book_isbn] = results_data
             successful_models += 1
 
+            # Register the newly trained model in the retraining engine
+            try:
+                data_hash = retraining_engine.calculate_data_hash(train_data, test_data, book_isbn)
+                retraining_engine.register_model(
+                    isbn=book_isbn,
+                    model_path=model_path,
+                    evaluation_metrics=evaluation_metrics,
+                    model_params=best_params,
+                    data_hash=data_hash,
+                    train_length=len(train_series),
+                    test_length=len(test_series),
+                    mlflow_run_id=None,  # Will be set later in MLflow runs
+                    mlflow_model_version=None,  # Will be set later in MLflow runs
+                    metadata={'optimization_results': optimization_results, 'config_environment': config.environment}
+                )
+                logger.info(f"📝 Registered new model for {book_isbn} in retraining registry")
+            except Exception as reg_error:
+                logger.warning(f"⚠️ Failed to register model for {book_isbn} in retraining registry: {reg_error}")
+
             logger.info(f"✅ Model training completed for {book_isbn}")
             logger.info(f"   MAE: {evaluation_metrics.get('mae', 0):.4f}")
             logger.info(f"   RMSE: {evaluation_metrics.get('rmse', 0):.4f}")
@@ -519,13 +592,39 @@ def train_models_from_consolidated_data(
                 logger.warning(f"⚠️ Failed to store run data for {book_isbn}: {storage_error}")
                 logger.info(f"📊 Model training was successful, individual run creation is optional")
 
-    # Return results in same format as original function
+    # Get retraining statistics for monitoring
+    retraining_stats = retraining_engine.get_retraining_stats()
+
+    # Log final summary with optimization results
+    logger.info(f"🎉 Training pipeline completed!")
+    logger.info(f"   Total books: {total_books}")
+    logger.info(f"   Newly trained: {successful_models - reused_models}")
+    logger.info(f"   Reused models: {reused_models}")
+    logger.info(f"   Failed: {failed_models}")
+    logger.info(f"   Configuration: {config.environment} mode")
+
+    if retraining_stats['total_decisions'] > 0:
+        logger.info(f"   Retraining efficiency: {reused_models}/{total_books} models reused ({reused_models/total_books*100:.1f}%)")
+
+    # Return enhanced results with optimization information
     return {
         'total_books': total_books,
         'successful_models': successful_models,
         'failed_models': failed_models,
+        'reused_models': reused_models,
+        'newly_trained_models': successful_models - reused_models,
         'book_results': book_results,
-        'training_timestamp': pd.Timestamp.now().isoformat()
+        'training_timestamp': pd.Timestamp.now().isoformat(),
+        'configuration': config.to_dict(),
+        'retraining_stats': retraining_stats,
+        'optimization_efficiency': {
+            'reuse_rate': reused_models / total_books if total_books > 0 else 0,
+            'success_rate': successful_models / total_books if total_books > 0 else 0,
+            'avg_trials_per_book': config.n_trials,
+            'early_stopping_enabled': True,
+            'patience': config.patience,
+            'min_improvement': config.min_improvement
+        }
     }
 
 # ------------------ STEPS ------------------ #
@@ -537,19 +636,22 @@ def train_models_from_consolidated_data(
     output_materializers=PandasMaterializer
 )
 def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_data")]:
-    """Load ISBN data from Google Sheets and return as DataFrame artifact."""
-    logger.info("Starting ISBN data loading")
+    """Load ISBN data from GCS bucket and return as DataFrame artifact."""
+    logger.info("Starting ISBN data loading from GCS")
     try:
-        df_isbns = get_isbn_data()
-        metadata_dict = _create_basic_data_metadata(df_isbns, "Google Sheets - ISBN data")
+        # Load data directly from GCS bucket
+        gcs_path = "gs://book-sales-deployment-artifacts/raw_data/ISBN_data.csv"
+        df_isbns = pd.read_csv(gcs_path)
+
+        metadata_dict = _create_basic_data_metadata(df_isbns, "GCS - ISBN data")
         logger.info(f"ISBN data metadata: {metadata_dict}")
 
         _add_step_metadata("isbn_data", metadata_dict)
-        logger.info(f"Loaded {len(df_isbns)} ISBN records")
+        logger.info(f"Loaded {len(df_isbns)} ISBN records from GCS")
         return df_isbns
 
     except Exception as e:
-        logger.error(f"Failed to load ISBN data: {e}")
+        logger.error(f"Failed to load ISBN data from GCS: {e}")
         raise
 
 @step(
@@ -559,19 +661,22 @@ def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_d
     output_materializers=PandasMaterializer
 )
 def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="uk_weekly_data")]:
-    """Load UK weekly data from Google Sheets and return as DataFrame artifact."""
-    logger.info("Starting UK weekly data loading")
+    """Load UK weekly data from GCS bucket and return as DataFrame artifact."""
+    logger.info("Starting UK weekly data loading from GCS")
     try:
-        df_uk_weekly = get_uk_weekly_data()
-        metadata_dict = _create_basic_data_metadata(df_uk_weekly, "Google Sheets - UK weekly data")
+        # Load data directly from GCS bucket
+        gcs_path = "gs://book-sales-deployment-artifacts/raw_data/UK_weekly_data.csv"
+        df_uk_weekly = pd.read_csv(gcs_path)
+
+        metadata_dict = _create_basic_data_metadata(df_uk_weekly, "GCS - UK weekly data")
         logger.info(f"UK weekly data metadata: {metadata_dict}")
 
         _add_step_metadata("uk_weekly_data", metadata_dict)
-        logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records")
+        logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records from GCS")
         return df_uk_weekly
 
     except Exception as e:
-        logger.error(f"Failed to load UK weekly data: {e}")
+        logger.error(f"Failed to load UK weekly data from GCS: {e}")
         raise
 
 @step(
@@ -959,26 +1064,33 @@ def parse_quality_report_step(quality_report_json: str) -> Dict:
     enable_cache=False,  # Disable cache to see fresh training run
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
-    experiment_tracker="mlflow_tracker",
 )
 def train_individual_arima_models_step(
     train_data: pd.DataFrame,
     test_data: pd.DataFrame,
     selected_isbns: List[str],
     output_dir: str,
-    n_trials: int = 10
+    n_trials: int = 10,  # Deprecated, use config instead
+    config: ARIMATrainingConfig = None
 ) -> Annotated[Dict[str, Any], ArtifactConfig(name="arima_training_results")]:
     """
-    Train individual SARIMA models for each selected book using consolidated artifacts.
+    Train individual SARIMA models for each selected book using consolidated artifacts with smart retraining.
+
+    Enhanced with configuration-driven optimization and model reuse logic.
     """
     import mlflow
-    
+
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
+    # Configure remote MLflow tracking server
+    mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
+    mlflow.set_tracking_uri(mlflow_tracking_uri)
+    
     # Set MLflow experiment name for this pipeline run
     experiment_name = "book_sales_arima_modeling_v2"
     mlflow.set_experiment(experiment_name)
+    logger.info(f"🧪 MLflow configured with remote server: {mlflow_tracking_uri}")
     logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
 
     try:
@@ -991,41 +1103,62 @@ def train_individual_arima_models_step(
         logger.info(f"Output directory: {arima_output_dir}")
         logger.info(f"Optuna trials per book: {n_trials}")
 
-        # Log pipeline-level parameters using ZenML's experiment tracker
+        # Log enhanced pipeline-level parameters using ZenML's experiment tracker
         mlflow.log_params({
-            "pipeline_type": "arima_training",
+            "pipeline_type": "arima_training_optimized",
             "total_books": len(selected_isbns),
-            "n_trials": n_trials,
+            "n_trials": config.n_trials if config else n_trials,
             "books": ",".join(selected_isbns),
-            "output_directory": arima_output_dir
+            "output_directory": arima_output_dir,
+            "config_environment": config.environment if config else "unknown",
+            "config_force_retrain": config.force_retrain if config else True,
+            "config_patience": config.patience if config else 3,
+            "config_min_improvement": config.min_improvement if config else 0.5,
+            "smart_retraining_enabled": config is not None
         })
 
-        # Train individual models using consolidated artifacts
+        # Initialize configuration if not provided
+        if config is None:
+            config = get_arima_config()
+            logger.info(f"Using default configuration for step: {config.environment}")
+
+        # Train individual models using consolidated artifacts with smart retraining
         training_results = train_models_from_consolidated_data(
             train_data=train_data,
             test_data=test_data,
             book_isbns=selected_isbns,
             output_dir=arima_output_dir,
-            n_trials=n_trials
+            config=config,
+            n_trials=n_trials  # Deprecated parameter for backward compatibility
         )
 
-        # Log pipeline-level summary metrics using ZenML's experiment tracker
+        # Log enhanced pipeline-level summary metrics using ZenML's experiment tracker
         pipeline_success_rate = (training_results.get('successful_models', 0) /
                                training_results.get('total_books', 1) * 100)
+        reuse_rate = training_results.get('optimization_efficiency', {}).get('reuse_rate', 0) * 100
+
         mlflow.log_metrics({
             "pipeline_success_rate": pipeline_success_rate,
             "total_books": training_results.get('total_books', 0),
             "successful_models": training_results.get('successful_models', 0),
-            "failed_models": training_results.get('failed_models', 0)
+            "failed_models": training_results.get('failed_models', 0),
+            "reused_models": training_results.get('reused_models', 0),
+            "newly_trained_models": training_results.get('newly_trained_models', 0),
+            "model_reuse_rate_percent": reuse_rate,
+            "config_n_trials": config.n_trials,
+            "config_patience": config.patience
         })
 
-        # Add pipeline-level tags to distinguish parent run from individual book runs
+        # Add enhanced pipeline-level tags to distinguish parent run from individual book runs
         mlflow.set_tags({
             "run_type": "pipeline_summary",
-            "architecture": "hybrid_tracking",
+            "architecture": "hybrid_tracking_optimized",
             "individual_runs_created": "true",
             "books_processed": ",".join(selected_isbns),
-            "scalable_approach": "parent_child_runs"
+            "scalable_approach": "parent_child_runs",
+            "smart_retraining": "enabled" if config else "disabled",
+            "config_environment": config.environment if config else "unknown",
+            "optimization_version": "v2"
         })
 
         logger.info(f"📊 Logged pipeline summary to MLflow: {pipeline_success_rate:.1f}% success rate")
@@ -1098,25 +1231,25 @@ def train_individual_arima_models_step(
 
                                 # Log the model as an artifact in this run first, then register
                                 import mlflow.statsmodels
-                                
+
                                 # Load the saved model and log it to this individual run
                                 try:
                                     saved_model = mlflow.statsmodels.load_model(model_path)
-                                    
+
                                     # Log the model to this run to create proper linkage
                                     logged_model = mlflow.statsmodels.log_model(
                                         statsmodels_model=saved_model,
                                         artifact_path="model"
                                     )
-                                    
+
                                     # Use the run-based URI for registration (this creates the proper link)
                                     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
-                                    
+
                                 except Exception as load_error:
                                     logger.warning(f"Could not load model for logging: {load_error}")
                                     # Fallback to file-based registration
                                     model_uri = f"file://{os.path.abspath(model_path)}"
-                                
+
                                 # Register model - now it will be properly linked to this run
                                 registered_model = mlflow.register_model(
                                     model_uri=model_uri,
@@ -1142,7 +1275,7 @@ def train_individual_arima_models_step(
 
             # Clean up old models after all individual runs are complete
             cleanup_old_mlflow_models(max_models_per_book=2)
-            
+
             # Clean up the stored data
             book_run_count = len(train_models_from_consolidated_data._book_run_data)
             delattr(train_models_from_consolidated_data, '_book_run_data')
@@ -1164,13 +1297,15 @@ def train_individual_arima_models_step(
             "successful_models": str(successful_models),
             "failed_models": str(failed_models),
             "success_rate": f"{(successful_models/total_books*100):.1f}%" if total_books > 0 else "0%",
-            "n_trials": str(n_trials),
+            "n_trials": str(config.n_trials if config else n_trials),
             "output_directory": arima_output_dir,
             "training_timestamp": pd.Timestamp.now().isoformat(),
-            "early_stopping_enabled": "true",
-            "patience": "5",
-            "min_improvement": "0.1",
-            "min_trials": "10"
+            "early_stopping_enabled": str(config.patience > 0 if config else True),
+            "patience": str(config.patience if config else 3),
+            "min_improvement": str(config.min_improvement if config else 0.5),
+            "min_trials": str(config.min_trials if config else 10),
+            "config_environment": config.environment if config else "unknown",
+            "smart_retraining_enabled": str(config is not None)
         }
 
         # Add individual book performance if available
@@ -1216,9 +1351,28 @@ def train_individual_arima_models_step(
 
         return error_results
 
+# Docker settings - let's go back to manual requirements for now
+docker_settings = DockerSettings(
+    requirements=[
+        "pandas>=2.0.0",
+        "numpy>=1.24.0",
+        "gcsfs>=2024.2.0",
+        "google-cloud-storage>=2.10.0",
+        "gdown>=5.2.0",
+        "openpyxl>=3.1.2",
+        "pmdarima>=2.0.4",
+        "optuna>=3.0.0",
+        "mlflow>=2.3.0",
+        "scipy>=1.10.0",
+        "scikit-learn>=1.3.0",
+        "statsmodels>=0.14.0"
+    ],
+    parent_image="zenmldocker/zenml:0.84.2-py3.10"
+)
+
 # ------------------ PIPELINE ------------------ #
 
-@pipeline
+@pipeline(settings={"docker": docker_settings})
 def book_sales_arima_modeling_pipeline(
     output_dir: str,
     selected_isbns: List[str] = None,
@@ -1227,10 +1381,11 @@ def book_sales_arima_modeling_pipeline(
     use_seasonality_filter: bool = True,
     max_seasonal_books: int = 50,
     train_arima: bool = True,
-    n_trials: int = 10
+    n_trials: int = 10,  # Deprecated, use config instead
+    config: ARIMATrainingConfig = None
 ) -> Dict:
     """
-    Complete book sales ARIMA modeling pipeline with Vertex AI deployment support.
+    Complete book sales ARIMA modeling pipeline with Vertex AI deployment support and smart optimization.
 
     This pipeline:
     1. Loads ISBN and UK weekly sales data
@@ -1239,10 +1394,14 @@ def book_sales_arima_modeling_pipeline(
     4. Saves processed data
     5. Filters books based on seasonality analysis for optimal SARIMA modeling
     6. Creates consolidated train/test artifacts for Vertex AI deployment
-    7. Trains individual SARIMA models for each selected book using consolidated artifacts
+    7. Trains individual SARIMA models with smart retraining logic
     8. Logs all experiments and models to MLflow for tracking
 
-    Key Features:
+    Enhanced Features (v2):
+    - Smart model reuse to avoid unnecessary retraining
+    - Configuration-driven optimization (development/testing/production modes)
+    - Performance-based retraining triggers
+    - Environment-specific parameter tuning
     - Consolidated artifacts enable efficient book filtering: train_data[train_data['ISBN'] == book_isbn]
     - Individual SARIMA models per book (scalable to 5+ books)
     - Vertex AI ready with ZenML artifact caching
@@ -1289,16 +1448,17 @@ def book_sales_arima_modeling_pipeline(
     # Optional: Parse JSON outputs back to dicts for pipeline return
     quality_report = parse_quality_report_step(quality_report_json)
 
-    # Optional: Train individual ARIMA models
+    # Optional: Train individual ARIMA models with smart optimization
     arima_results = None
     if train_arima:
-        logger.info("Starting individual ARIMA model training")
+        logger.info("Starting individual ARIMA model training with smart optimization")
         arima_results = train_individual_arima_models_step(
             train_data=train_data,
             test_data=test_data,
             selected_isbns=selected_isbns,
             output_dir=output_dir,
-            n_trials=n_trials
+            n_trials=n_trials,  # Deprecated parameter for backward compatibility
+            config=config
         )
         logger.info("ARIMA training completed successfully")
     else:
@@ -1321,7 +1481,18 @@ if __name__ == "__main__":
     project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
     output_dir = os.path.join(project_root, 'data', 'processed')
 
-    # Run the complete ARIMA modeling pipeline with specific books
+    # Create configuration for development with smart retraining enabled
+    config = get_arima_config(
+        environment='development',
+        n_trials=3,  # Fast development mode
+        force_retrain=False  # Enable smart retraining for demo
+    )
+
+    print(f"🔧 Using configuration: {config.environment} mode")
+    print(f"   Trials: {config.n_trials}, Force retrain: {config.force_retrain}")
+    print(f"   Smart retraining: {'Enabled' if not config.force_retrain else 'Disabled'}")
+
+    # Run the optimized ARIMA modeling pipeline with smart retraining
     results = book_sales_arima_modeling_pipeline(
         output_dir=output_dir,
         selected_isbns=DEFAULT_TEST_ISBNS,  # Use the 2 specific books: Alchemist and Caterpillar
@@ -1330,7 +1501,8 @@ if __name__ == "__main__":
         use_seasonality_filter=False,
         max_seasonal_books=DEFAULT_MAX_SEASONAL_BOOKS,  # Not used when specific ISBNs provided
         train_arima=True,  # Enable ARIMA training
-        n_trials=3  # Number of Optuna trials per book (reduced for ~10 min testing)
+        n_trials=3,  # Deprecated, config.n_trials will be used instead
+        config=config  # Use optimized configuration
     )
 
     # Print results summary
@@ -1355,8 +1527,23 @@ if __name__ == "__main__":
     if arima_results:
         total_books = arima_results.get('total_books', 0)
         successful_models = arima_results.get('successful_models', 0)
+        reused_models = arima_results.get('reused_models', 0)
+        newly_trained = arima_results.get('newly_trained_models', 0)
 
-        print(f"✅ ARIMA training completed: {successful_models}/{total_books} models trained successfully")
+        print(f"✅ ARIMA training completed: {successful_models}/{total_books} models successful")
+
+        # Show optimization efficiency
+        if reused_models > 0:
+            reuse_rate = (reused_models / total_books * 100) if total_books > 0 else 0
+            print(f"⚡ Optimization efficiency: {reused_models} models reused, {newly_trained} newly trained ({reuse_rate:.1f}% reuse rate)")
+        else:
+            print(f"🔄 All {newly_trained} models were newly trained (first run or force_retrain=True)")
+
+        # Show configuration used
+        config_info = arima_results.get('configuration', {})
+        if config_info:
+            print(f"⚙️  Configuration: {config_info.get('environment', 'unknown')} mode, "
+                  f"{config_info.get('n_trials', 'unknown')} trials per book")
 
         # Show individual book results
         book_results = arima_results.get('book_results', {})
@@ -1366,11 +1553,18 @@ if __name__ == "__main__":
                 mae = metrics.get('mae', 0)
                 rmse = metrics.get('rmse', 0)
                 mape = metrics.get('mape', 0)
-                print(f"  📖 {isbn}: MAE={mae:.2f}, RMSE={rmse:.2f}, MAPE={mape:.1f}%")
+                reused = " (reused)" if book_result.get('reused_existing_model', False) else " (newly trained)"
+                print(f"  📖 {isbn}: MAE={mae:.2f}, RMSE={rmse:.2f}, MAPE={mape:.1f}%{reused}")
             elif 'error' in book_result:
                 print(f"  ❌ {isbn}: Training failed - {book_result['error']}")
 
         print(f"📁 ARIMA models saved to: outputs/models/arima/")
+
+        # Show retraining stats if available
+        retraining_stats = arima_results.get('retraining_stats', {})
+        if retraining_stats.get('total_decisions', 0) > 0:
+            print(f"📊 Smart retraining stats: {retraining_stats['reuse_decisions']} reuse decisions, "
+                  f"{retraining_stats['retrain_decisions']} retrain decisions")
     else:
         print("⚠️  Could not retrieve ARIMA training results from pipeline output")
         print("📝 Note: ARIMA training may have completed successfully but results are not accessible via pipeline artifacts")
