@@ -754,25 +754,53 @@ def complete_lstm_workflow(cnn_forecasts: np.ndarray = None):
         print(f"📊 Test series range: {test_series.min():.0f} to {test_series.max():.0f}")
         print(f"📊 Test series mean: {test_series.mean():.0f}")
 
-        # Create training series from the training portion of residuals
-        train_residuals = lstm_data['train_residuals']
+        # Load original CNN training data for better visualization
+        print("📋 Loading original CNN training data for plotting...")
+        try:
+            train_data_df = pd.read_csv("data/processed/combined_train_data.csv")
+            
+            # Convert date column to datetime and set as index if exists
+            if 'date' in train_data_df.columns:
+                train_data_df['date'] = pd.to_datetime(train_data_df['date'])
+                train_data_df = train_data_df.set_index('date')
+            elif train_data_df.index.name == 'date' or 'date' in str(train_data_df.index):
+                train_data_df.index = pd.to_datetime(train_data_df.index)
+            
+            # Use the Volume column from original training data
+            if 'Volume' in train_data_df.columns:
+                train_series = train_data_df['Volume'].copy()
+                train_series.name = 'Volume'
+                print(f"✅ Loaded original CNN training data with {len(train_series)} points")
+            elif 'volume' in train_data_df.columns:
+                train_series = train_data_df['volume'].copy()
+                train_series.name = 'Volume'
+                print(f"✅ Loaded original CNN training data with {len(train_series)} points")
+            else:
+                raise ValueError("No Volume/volume column found in training data")
+                
+        except Exception as e:
+            print(f"⚠️  Could not load original training data: {e}")
+            print("📋 Falling back to reconstructed training series...")
+            
+            # Fallback: Create training series from the training portion of residuals
+            train_residuals = lstm_data['train_residuals']
 
-        # Use actual dates from residuals data if available
-        if 'date' in residuals_df.columns:
-            # Get the training portion of dates (all but last 32)
-            train_dates = pd.to_datetime(residuals_df['date'].values[:-len(test_residuals)])
-        elif isinstance(residuals_df.index, pd.DatetimeIndex):
-            train_dates = residuals_df.index[:len(train_residuals)]
-        else:
-            # Create proper weekly dates ending before test period
-            train_end = test_dates[0] - pd.Timedelta(weeks=1)
-            train_dates = pd.date_range(end=train_end, periods=len(train_residuals), freq='W-SAT')
+            # Use actual dates from residuals data if available
+            if 'date' in residuals_df.columns:
+                # Get the training portion of dates (all but last 32)
+                train_dates = pd.to_datetime(residuals_df['date'].values[:-len(test_residuals)])
+            elif isinstance(residuals_df.index, pd.DatetimeIndex):
+                train_dates = residuals_df.index[:len(train_residuals)]
+            else:
+                # Create proper weekly dates ending before test period
+                train_end = test_dates[0] - pd.Timedelta(weeks=1)
+                train_dates = pd.date_range(end=train_end, periods=len(train_residuals), freq='W-SAT')
 
-        # For training data, approximate actual values (this is for visualization only)
-        # Use a reasonable baseline + residuals
-        baseline_train = np.full_like(train_residuals, test_series.mean())
-        train_actual_reconstructed = baseline_train + train_residuals
-        train_series = pd.Series(train_actual_reconstructed, index=train_dates, name='Volume')
+            # For training data, approximate actual values (this is for visualization only)
+            # Use a reasonable baseline + residuals
+            baseline_train = np.full_like(train_residuals, test_series.mean())
+            train_actual_reconstructed = baseline_train + train_residuals
+            train_series = pd.Series(train_actual_reconstructed, index=train_dates, name='Volume')
 
         print(f"✅ Created training series with shape: {train_series.shape}")
         print(f"📊 Training series range: {train_series.min():.0f} to {train_series.max():.0f}")

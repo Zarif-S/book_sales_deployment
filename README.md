@@ -254,7 +254,7 @@ Comprehensive documentation available in `docs/`:
 - **ARIMA**: Good baseline, interpretable coefficients
 - **CNN**: Excellent pattern recognition, handles seasonality
 - **LSTM**: Best for complex temporal dependencies
-- **Hybrid**: Combines strengths, often best overall performance
+- **Hybrid**: Combines different approaches, performance varies by use case
 
 ### COVID-19 Impact
 - Clear structural breaks during UK lockdowns
