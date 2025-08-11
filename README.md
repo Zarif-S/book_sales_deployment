@@ -29,17 +29,18 @@ book_sales_deployment/
 │   └── _05_lstm_*_residuals.py # Hybrid modeling approaches
 │
 ├── pipelines/                  # ZenML pipeline definitions
-│   ├── zenml_pipeline_arima.py      # Production ARIMA pipeline
-│   ├── zenml_pipeline_cnn_lstm.py
-│   └── zenml_pipeline.py
+│   ├── zenml_pipeline.py            # Main ZenML pipeline
+│   └── zenml_pipeline_cnn_lstm_testing.py  # CNN+LSTM testing pipeline
 │
 ├── utils/                      # Utility functions
 │   └── plotting.py            # Comprehensive plotting utilities
 │
-├── scripts/                    # Execution scripts
-│   ├── run_analysis.py        # Main analysis runner
+├── scripts/                    # Analysis and utility scripts
 │   ├── comprehensive_diagnostics.py  # Complete automated diagnostics
-│   └── interactive_diagnostics.py    # Interactive user-guided diagnostics
+│   ├── interactive_diagnostics.py    # Interactive user-guided diagnostics
+│   ├── arima_model_diagnostics.py    # ARIMA-specific diagnostics
+│   ├── seasonality_business_insights.py  # Business insights analysis
+│   └── seasonality_deployment_analysis.py # Deployment readiness analysis
 │
 ├── data/                       # Data storage
 │   ├── raw/                   # Original datasets
@@ -55,7 +56,11 @@ book_sales_deployment/
 │   ├── hybrid/arima_residuals/ # LSTM+ARIMA hybrid experiments  
 │   ├── hybrid/cnn_residuals/   # LSTM+CNN hybrid experiments
 │   └── optuna_storage/         # Optuna optimization databases
+├── mlruns/                     # MLflow experiment tracking data
+│   ├── models/                 # Registered model versions
+│   └── [experiment_ids]/       # Individual experiment runs
 ├── docs/                       # Comprehensive documentation
+├── dev/                        # Development files and archives
 └── tests/                      # Test suite
 ```
 
@@ -72,14 +77,25 @@ poetry install
 poetry shell
 ```
 
-### 2. Data Preparation
+### 2. ZenML Setup (if using ZenML pipelines)
+
+```bash
+# Install ZenML integrations
+zenml integration install mlflow
+
+# Set up experiment tracker (optional)
+zenml experiment-tracker register mlflow_tracker --flavor=mlflow
+```
+
+### 3. Data Preparation
 
 ```bash
 # Load and preprocess data
-poetry run python scripts/run_analysis.py --analysis-type preprocessing
+poetry run python -m steps._01_load_data
+poetry run python -m steps._02_preprocessing
 ```
 
-### 3. Run Time Series Analysis
+### 4. Run Time Series Analysis
 
 ```bash
 # Complete time series diagnostics
@@ -91,14 +107,14 @@ poetry run python -m steps._04_cnn_standalone
 poetry run python -m steps._04_lstm_standalone
 ```
 
-### 4. Run Complete Pipeline
+### 5. Run Complete Pipeline
 
 ```bash
-# Production ARIMA pipeline (recommended)
-poetry run python pipelines/zenml_pipeline_arima.py
+# Main ZenML pipeline
+poetry run python pipelines/zenml_pipeline.py
 
-# CNN + LSTM hybrid pipeline  
-poetry run python pipelines/zenml_pipeline_cnn_lstm.py
+# CNN + LSTM testing pipeline  
+poetry run python pipelines/zenml_pipeline_cnn_lstm_testing.py
 ```
 
 ## 📊 Available Models
@@ -160,7 +176,7 @@ poetry run python pipelines/zenml_pipeline_cnn_lstm.py
 
 ## 📁 Output Organization
 
-All results are saved to organized directories [[memory:5369851]]:
+All results are saved to organized directories:
 
 ```
 outputs/
@@ -171,16 +187,40 @@ outputs/
 ├── plots/
 │   ├── interactive/            # HTML interactive plots
 │   └── static/                 # PNG static images
-└── data/
-    ├── comparisons/            # Model comparison data
-    └── residuals/              # Residual analysis results
+├── data/
+│   ├── comparisons/            # Model comparison data
+│   └── residuals/              # Residual analysis results
+├── seasonality_analysis/       # Business insights and deployment analysis
+└── value_seasonality_analysis/ # Value vs seasonality correlation analysis
 ```
+
+## 🔬 MLflow Integration
+
+The project includes comprehensive experiment tracking:
+
+```bash
+# View MLflow UI (after running experiments)
+mlflow ui
+
+# Access at http://localhost:5000
+```
+
+**Tracked Metrics:**
+- Model performance (MAE, RMSE, MAPE)
+- Hyperparameter optimization results
+- Model artifacts and plots
+- Individual book model comparisons
 
 ## 🔧 Development
 
 ### Running Tests
 ```bash
+# Run all tests
 poetry run python -m pytest tests/
+
+# Run specific test files
+poetry run python -m pytest tests/test_01_load_data.py -v
+poetry run python -m pytest tests/test_02_preprocessing.py -v
 ```
 
 ### Code Quality
@@ -198,9 +238,10 @@ poetry run python -m pytest tests/
 ## 📚 Documentation
 
 Comprehensive documentation available in `docs/`:
-- **API Documentation**: Detailed function references
-- **User Guides**: Step-by-step tutorials
-- **Development Notes**: Architecture and design decisions
+- **API Documentation**: Detailed function references (`docs/api/`)
+- **User Guides**: Step-by-step tutorials (`docs/guides/`)
+- **ZenML Pipeline Guide**: Optimization and best practices
+- **Development Notes**: Architecture and design decisions (`dev/`)
 
 ## 🎯 Key Insights
 
@@ -243,9 +284,6 @@ This project is licensed under the MIT License - see the LICENSE file for detail
 
 **Quick Commands Reference:**
 ```bash
-# Complete analysis pipeline
-poetry run python scripts/run_analysis.py
-
 # Time series diagnostics  
 poetry run python scripts/comprehensive_diagnostics.py
 
@@ -254,10 +292,18 @@ poetry run python -m steps._04_arima_standalone
 poetry run python -m steps._04_cnn_standalone
 poetry run python -m steps._04_lstm_standalone
 
-# Production ARIMA pipeline
-poetry run python pipelines/zenml_pipeline_arima.py
+# Business insights and seasonality analysis
+poetry run python scripts/seasonality_business_insights.py
+poetry run python scripts/seasonality_deployment_analysis.py
 
-# Hybrid pipelines
+# Main ZenML pipeline
+poetry run python pipelines/zenml_pipeline.py
+
+# CNN+LSTM testing pipeline
+poetry run python pipelines/zenml_pipeline_cnn_lstm_testing.py
+
+# View MLflow experiments
+mlflow ui
 ```
 
 For detailed API documentation and guides, see the `docs/` directory.
