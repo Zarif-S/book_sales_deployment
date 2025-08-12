@@ -10,10 +10,13 @@ import pandas as pd
 import numpy as np
 import json
 import pickle
+import time
+from functools import wraps
 import mlflow
 import mlflow.statsmodels
 from typing import Dict, List, Any, Annotated
 from zenml import step
+from zenml.steps import get_step_context
 from zenml.logger import get_logger
 from zenml import ArtifactConfig
 from config.arima_training_config import ARIMATrainingConfig, get_arima_config
@@ -22,6 +25,28 @@ from utils.zenml_helpers import _add_step_metadata, create_step_metadata
 
 # Initialize logger
 logger = get_logger(__name__)
+
+
+def retry_mlflow_operation(max_retries=3, delay=1):
+    """Decorator to retry MLflow operations on connection errors"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (ConnectionResetError, ConnectionError, Exception) as e:
+                    if attempt < max_retries - 1 and ("connection" in str(e).lower() or "remote" in str(e).lower()):
+                        logger.warning(f"MLflow connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                        time.sleep(delay * (attempt + 1))  # Exponential backoff
+                        continue
+                    else:
+                        if attempt == max_retries - 1:
+                            logger.error(f"MLflow operation failed after {max_retries} attempts: {e}")
+                        raise
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 
 def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
@@ -123,7 +148,7 @@ def train_models_from_consolidated_data(
     - Smart model reuse to avoid unnecessary retraining
     - Performance-based retraining triggers
     - Comprehensive logging and monitoring
-    
+
     Note: Deprecated n_trials parameter has been removed. Use config.n_trials instead.
     """
     from steps._04_arima_standalone import (
@@ -575,7 +600,7 @@ def train_individual_arima_models_step(
     # Configure remote MLflow tracking server
     mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
     mlflow.set_tracking_uri(mlflow_tracking_uri)
-    
+
     # Set MLflow experiment name for this pipeline run
     experiment_name = "book_sales_arima_modeling_v2"
     mlflow.set_experiment(experiment_name)
@@ -723,11 +748,28 @@ def train_individual_arima_models_step(
                                 try:
                                     saved_model = mlflow.statsmodels.load_model(model_path)
 
-                                    # Log the model to this run to create proper linkage
-                                    logged_model = mlflow.statsmodels.log_model(
-                                        statsmodels_model=saved_model,
-                                        artifact_path="model"
-                                    )
+                                    # Create proper input example for time series model
+                                    input_example = pd.DataFrame({
+                                        'start': [test_data.index[0] if not test_data.empty else pd.Timestamp.now()],
+                                        'end': [test_data.index[-1] if not test_data.empty else pd.Timestamp.now()]
+                                    })
+
+                                    # Log the model to this run with proper input example
+                                    try:
+                                        logged_model = mlflow.statsmodels.log_model(
+                                            statsmodels_model=saved_model,
+                                            artifact_path="model",
+                                            input_example=input_example,
+                                            signature=mlflow.models.infer_signature(input_example)
+                                        )
+                                    except Exception as signature_error:
+                                        # Fallback without signature if inference fails
+                                        logger.warning(f"Could not infer model signature: {signature_error}")
+                                        logged_model = mlflow.statsmodels.log_model(
+                                            statsmodels_model=saved_model,
+                                            artifact_path="model",
+                                            input_example=input_example
+                                        )
 
                                     # Use the run-based URI for registration (this creates the proper link)
                                     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
@@ -737,17 +779,21 @@ def train_individual_arima_models_step(
                                     # Fallback to file-based registration
                                     model_uri = f"file://{os.path.abspath(model_path)}"
 
-                                # Register model - now it will be properly linked to this run
-                                registered_model = mlflow.register_model(
-                                    model_uri=model_uri,
-                                    name=model_name,
-                                    tags={
-                                        "book_isbn": book_data['book_isbn'],
-                                        "book_title": book_data['book_title'],
-                                        "run_type": "individual_book",
-                                        "model_type": "SARIMA"
-                                    }
-                                )
+                                # Register model with retry logic - now it will be properly linked to this run
+                                @retry_mlflow_operation(max_retries=3, delay=2)
+                                def register_model_with_retry():
+                                    return mlflow.register_model(
+                                        model_uri=model_uri,
+                                        name=model_name,
+                                        tags={
+                                            "book_isbn": book_data['book_isbn'],
+                                            "book_title": book_data['book_title'],
+                                            "run_type": "individual_book",
+                                            "model_type": "SARIMA"
+                                        }
+                                    )
+
+                                registered_model = register_model_with_retry()
 
                                 mlflow.log_param("registered_model_version", registered_model.version)
                                 logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} to individual run")

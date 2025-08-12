@@ -14,7 +14,7 @@ from pathlib import Path
 # Pipeline Constants
 DEFAULT_TEST_ISBNS = [
     '9780722532935',  # The Alchemist
-    #'9780241003008',  # Very Hungry Caterpillar, The
+    '9780241003008',  # Very Hungry Caterpillar, The
 ]
 DEFAULT_SPLIT_SIZE = 32
 DEFAULT_MAX_SEASONAL_BOOKS = 15
@@ -67,9 +67,9 @@ class ARIMATrainingConfig:
         configs = {
             'development': {
                 # Fast development parameters for quick iteration
-                'n_trials': int(os.getenv('ARIMA_N_TRIALS', 3)),
+                'n_trials': int(os.getenv('ARIMA_N_TRIALS', 2)),
                 'patience': int(os.getenv('ARIMA_PATIENCE', 1)),
-                'min_trials': int(os.getenv('ARIMA_MIN_TRIALS', 2)),
+                'min_trials': int(os.getenv('ARIMA_MIN_TRIALS', 1)),
                 'min_improvement': float(os.getenv('ARIMA_MIN_IMPROVEMENT', 0.5)),
                 'force_retrain': os.getenv('ARIMA_FORCE_RETRAIN', 'true').lower() == 'true',
                 'max_model_age_days': None,  # Age check disabled in dev

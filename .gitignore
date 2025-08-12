@@ -1,5 +1,9 @@
 .venv/
 mlruns/
+mlartifacts/
+mlflow.db
+__pycache__/
+*.py[cod]
 *.csv
 *.xlsx
 *.pkl

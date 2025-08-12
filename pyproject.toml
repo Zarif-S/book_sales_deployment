@@ -49,6 +49,7 @@ secure = "^0.3.0"
 PyJWT = "^2.8.0"
 python-multipart = "^0.0.6"
 protobuf = ">=6.0.0"
+orjson = "^3.11.0"
 
 # API (optional)
 fastapi = "^0.100.0"

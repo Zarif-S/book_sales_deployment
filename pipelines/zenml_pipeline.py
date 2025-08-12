@@ -2,6 +2,8 @@
 import os
 import sys
 import json
+import time
+from functools import wraps
 from typing import Tuple, Annotated, Dict, List, Any
 
 # Third-party imports
@@ -12,6 +14,7 @@ import mlflow
 # ZenML imports
 from zenml import step, pipeline
 from zenml.config import DockerSettings
+from zenml.steps import get_step_context
 from zenml.logger import get_logger
 from zenml import ArtifactConfig
 from zenml.integrations.pandas.materializers.pandas_materializer import PandasMaterializer
@@ -36,10 +39,10 @@ except ImportError:
 
 # Configuration and utility imports
 from config.arima_training_config import (
-    ARIMATrainingConfig, 
+    ARIMATrainingConfig,
     get_arima_config,
     DEFAULT_TEST_ISBNS,
-    DEFAULT_SPLIT_SIZE, 
+    DEFAULT_SPLIT_SIZE,
     DEFAULT_MAX_SEASONAL_BOOKS
 )
 from utils.model_reuse import ModelRetrainDecisionEngine, create_retraining_engine
@@ -76,6 +79,24 @@ def create_step_metadata(base_data: dict, **additional_metadata) -> dict:
     # Convert all values to strings for ZenML compatibility
     return {k: str(v) for k, v in metadata.items()}
 
+def get_git_commit_hash() -> str:
+    """
+    Get the current git commit hash for code traceability.
+
+    Returns:
+        Git commit hash (short version) or 'unknown' if not available
+    """
+    try:
+        import subprocess
+        result = subprocess.run(['git', 'rev-parse', '--short', 'HEAD'],
+                              capture_output=True, text=True, cwd=os.path.dirname(__file__))
+        if result.returncode == 0:
+            return result.stdout.strip()
+        else:
+            return 'unknown'
+    except Exception:
+        return 'unknown'
+
 def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
     """
     Cleanup old MLflow model artifacts to prevent disk space issues.
@@ -86,39 +107,66 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
         # Find all model.statsmodels files and extract book information
         model_files_by_book = {}
 
-        for root, dirs, files in os.walk("mlruns"):
-            for file in files:
-                if file == "model.statsmodels":
-                    full_path = os.path.join(root, file)
-                    stat_info = os.stat(full_path)
+        # Search in both mlruns and mlartifacts directories
+        search_dirs = ["mlruns", "mlartifacts"]
 
-                    # Extract book ISBN from run name if available
-                    run_dir = full_path.split('/artifacts/')[0]
-                    book_isbn = None
+        for search_dir in search_dirs:
+            if not os.path.exists(search_dir):
+                continue
 
-                    try:
-                        # Try to get run name from tags
-                        run_name_file = os.path.join(run_dir, 'tags', 'mlflow.runName')
-                        if os.path.exists(run_name_file):
-                            with open(run_name_file, 'r') as f:
-                                run_name = f.read().strip()
-                                # Extract ISBN from run name (format: book_9780123456789_Title_timestamp)
-                                if 'book_' in run_name:
-                                    parts = run_name.split('_')
-                                    for i, part in enumerate(parts):
-                                        if part == 'book' and i + 1 < len(parts):
-                                            potential_isbn = parts[i + 1]
-                                            if len(potential_isbn) == 13 and potential_isbn.isdigit():
-                                                book_isbn = potential_isbn
-                                                break
-                    except Exception:
-                        # If we can't extract from run name, skip this model
-                        continue
+            for root, dirs, files in os.walk(search_dir):
+                for file in files:
+                    if file == "model.statsmodels":
+                        full_path = os.path.join(root, file)
+                        stat_info = os.stat(full_path)
 
-                    if book_isbn:
-                        if book_isbn not in model_files_by_book:
-                            model_files_by_book[book_isbn] = []
-                        model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, run_dir))
+                        # Extract book ISBN from run name if available
+                        book_isbn = None
+                        run_dir = None
+
+                        if search_dir == "mlruns":
+                            # For mlruns, use the existing logic
+                            run_dir = full_path.split('/artifacts/')[0]
+                        else:  # mlartifacts
+                            # For mlartifacts, construct the corresponding mlruns path
+                            path_parts = full_path.split('/')
+                            if len(path_parts) >= 4:
+                                experiment_id = path_parts[1]  # mlartifacts/experiment_id/run_id/...
+                                run_id = path_parts[2]
+                                run_dir = os.path.join("mlruns", experiment_id, run_id)
+
+                        if run_dir:
+                            try:
+                                # Try to get run name from tags
+                                run_name_file = os.path.join(run_dir, 'tags', 'mlflow.runName')
+                                if os.path.exists(run_name_file):
+                                    with open(run_name_file, 'r') as f:
+                                        run_name = f.read().strip()
+                                        # Extract ISBN from run name (format: book_9780123456789_Title_timestamp)
+                                        if 'book_' in run_name:
+                                            parts = run_name.split('_')
+                                            for i, part in enumerate(parts):
+                                                if part == 'book' and i + 1 < len(parts):
+                                                    potential_isbn = parts[i + 1]
+                                                    if len(potential_isbn) == 13 and potential_isbn.isdigit():
+                                                        book_isbn = potential_isbn
+                                                        break
+                            except Exception:
+                                # If we can't extract from run name, skip this model
+                                continue
+
+                        if book_isbn:
+                            if book_isbn not in model_files_by_book:
+                                model_files_by_book[book_isbn] = []
+
+                            # For cleanup, we need to remove both the mlruns entry AND the mlartifacts entry
+                            if search_dir == "mlartifacts":
+                                # Store the full run directory in mlartifacts for removal
+                                artifact_run_dir = os.path.dirname(os.path.dirname(os.path.dirname(full_path)))  # mlartifacts/exp/run
+                                model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, artifact_run_dir, run_dir))
+                            else:
+                                # For mlruns, store the run directory
+                                model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, run_dir, None))
 
         if not model_files_by_book:
             logger.info("✅ Model cleanup: No models found with identifiable book ISBNs")
@@ -139,14 +187,31 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
 
             if models_to_remove > 0:
                 # Remove old models for this book (keep the newest max_models_per_book)
-                for file_path, mod_time, size, run_dir in book_models[max_models_per_book:]:
+                models_to_delete = book_models[max_models_per_book:]
+
+                for model_info in models_to_delete:
+                    file_path = model_info[0]
+                    mod_time = model_info[1]
+                    size = model_info[2]
+                    primary_dir = model_info[3]  # Either mlruns dir or mlartifacts run dir
+                    secondary_dir = model_info[4] if len(model_info) > 4 else None  # mlruns dir for mlartifacts entries
+
                     try:
-                        if os.path.exists(run_dir):
+                        # Remove the primary directory (mlruns or mlartifacts run directory)
+                        if os.path.exists(primary_dir):
                             import shutil
-                            shutil.rmtree(run_dir)
+                            shutil.rmtree(primary_dir)
                             total_removed += 1
                             total_size_removed += size
-                            logger.info(f"🗑️  Removed old model for {book_isbn}: {os.path.basename(run_dir)} ({size/(1024*1024):.1f}MB)")
+                            dir_type = "mlartifacts" if "mlartifacts" in primary_dir else "mlruns"
+                            logger.info(f"🗑️  Removed old model for {book_isbn} ({dir_type}): {os.path.basename(primary_dir)} ({size/(1024*1024):.1f}MB)")
+
+                        # Also remove the corresponding mlruns directory if this was an mlartifacts entry
+                        if secondary_dir and os.path.exists(secondary_dir):
+                            import shutil
+                            shutil.rmtree(secondary_dir)
+                            logger.info(f"🗑️  Removed corresponding mlruns entry for {book_isbn}: {os.path.basename(secondary_dir)}")
+
                     except Exception as e:
                         logger.warning(f"⚠️  Failed to remove {file_path}: {e}")
 
@@ -158,6 +223,27 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
 
     except Exception as e:
         logger.warning(f"⚠️  Model cleanup failed: {e}")
+
+def retry_mlflow_operation(max_retries=3, delay=1):
+    """Decorator to retry MLflow operations on connection errors"""
+    def decorator(func):
+        @wraps(func)
+        def wrapper(*args, **kwargs):
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except (ConnectionResetError, ConnectionError, Exception) as e:
+                    if attempt < max_retries - 1 and ("connection" in str(e).lower() or "remote" in str(e).lower()):
+                        logger.warning(f"MLflow connection error (attempt {attempt + 1}/{max_retries}): {e}")
+                        time.sleep(delay * (attempt + 1))  # Exponential backoff
+                        continue
+                    else:
+                        if attempt == max_retries - 1:
+                            logger.error(f"MLflow operation failed after {max_retries} attempts: {e}")
+                        raise
+            return func(*args, **kwargs)
+        return wrapper
+    return decorator
 
 def _add_step_metadata(output_name: str, metadata_dict: dict) -> None:
     """Helper function to add metadata to step outputs with error handling."""
@@ -1069,6 +1155,7 @@ def train_individual_arima_models_step(
     test_data: pd.DataFrame,
     selected_isbns: List[str],
     output_dir: str,
+    timestamp: str,  # Pipeline timestamp for consistent naming
     n_trials: int = 10,  # Deprecated, use config instead
     config: ARIMATrainingConfig = None
 ) -> Annotated[Dict[str, Any], ArtifactConfig(name="arima_training_results")]:
@@ -1082,15 +1169,17 @@ def train_individual_arima_models_step(
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
-    # Configure remote MLflow tracking server
-    mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
+    # Configure MLflow tracking server (use environment variable or default to local port 5001)
+    mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5001")
     mlflow.set_tracking_uri(mlflow_tracking_uri)
 
-    # Set MLflow experiment name for this pipeline run
-    experiment_name = "book_sales_arima_modeling_v2"
-    mlflow.set_experiment(experiment_name)
-    logger.info(f"🧪 MLflow configured with remote server: {mlflow_tracking_uri}")
-    logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
+    # Set MLflow experiment name for parent pipeline runs
+    pipeline_experiment_name = "book_sales_arima_pipeline"
+    mlflow.set_experiment(pipeline_experiment_name)
+    is_local = "127.0.0.1" in mlflow_tracking_uri or "localhost" in mlflow_tracking_uri
+    server_type = "local" if is_local else "remote"
+    logger.info(f"🧪 MLflow configured with {server_type} server: {mlflow_tracking_uri}")
+    logger.info(f"🧪 MLflow experiment set to: {pipeline_experiment_name}")
 
     try:
         # Create ARIMA output directory in outputs/models/arima
@@ -1102,9 +1191,14 @@ def train_individual_arima_models_step(
         logger.info(f"Output directory: {arima_output_dir}")
         logger.info(f"Optuna trials per book: {n_trials}")
 
+        # Get git commit hash for code traceability
+        git_commit_hash = get_git_commit_hash()
+        logger.info(f"🔧 Git commit hash: {git_commit_hash}")
+
         # Log enhanced pipeline-level parameters using ZenML's experiment tracker
         mlflow.log_params({
             "pipeline_type": "arima_training_optimized",
+            "git_commit_hash": git_commit_hash,
             "total_books": len(selected_isbns),
             "n_trials": config.n_trials if config else n_trials,
             "books": ",".join(selected_isbns),
@@ -1148,9 +1242,47 @@ def train_individual_arima_models_step(
             "config_patience": config.patience
         })
 
+        # Log dataset information for parent pipeline run
+        try:
+            # Log consolidated training dataset with schema and profile
+            training_dataset = mlflow.data.from_pandas(
+                train_data,
+                source="consolidated_training_data",
+                name="book_sales_training_data"
+            )
+            mlflow.log_input(training_dataset, context="training")
+
+            # Log consolidated test dataset
+            test_dataset = mlflow.data.from_pandas(
+                test_data,
+                source="consolidated_test_data",
+                name="book_sales_test_data"
+            )
+            mlflow.log_input(test_dataset, context="testing")
+
+            logger.info(f"📊 Logged dataset info: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
+        except Exception as dataset_error:
+            logger.warning(f"⚠️ Failed to log dataset information: {dataset_error}")
+
+        # Create scalable pipeline run name using passed timestamp (ensures identical ZenML/MLflow naming)
+        num_books = len(selected_isbns)
+        pipeline_run_name = f"book_sales_arima_pipeline_{num_books}books_{git_commit_hash}_{timestamp}"
+
+        # Set MLflow run name to match our custom pipeline name
+        current_run = mlflow.active_run()
+        if current_run:
+            mlflow.set_tag("mlflow.runName", pipeline_run_name)
+            parent_run_id = current_run.info.run_id
+            logger.info(f"🏷️  Set MLflow run name: {pipeline_run_name}")
+        else:
+            parent_run_id = "unknown"
+
         # Add enhanced pipeline-level tags to distinguish parent run from individual book runs
         mlflow.set_tags({
             "run_type": "pipeline_summary",
+            "run_name": pipeline_run_name,
+            "parent_run_id": parent_run_id,
+            "git_commit_hash": git_commit_hash,
             "architecture": "hybrid_tracking_optimized",
             "individual_runs_created": "true",
             "books_processed": ",".join(selected_isbns),
@@ -1173,11 +1305,15 @@ def train_individual_arima_models_step(
             except Exception as e:
                 logger.warning(f"⚠️ Could not end current MLflow run: {e}")
 
+            # Set experiment for child runs (individual book models)
+            child_experiment_name = "book_sales_arima_models"
+            mlflow.set_experiment(child_experiment_name)
+            logger.info(f"📊 Switched to child experiment: {child_experiment_name}")
+
             for book_data in train_models_from_consolidated_data._book_run_data:
                 try:
-                    import time
                     clean_title = book_data['book_title'].replace(' ', '_').replace(',', '').replace("'", '').replace('.', '')
-                    book_run_name = f"book_{book_data['book_isbn']}_{clean_title[:15]}_{time.strftime('%H%M%S')}"
+                    book_run_name = f"book_{book_data['book_isbn']}_{clean_title[:15]}"
 
                     # Create individual run outside ZenML context (sequential, not nested)
                     with mlflow.start_run(run_name=book_run_name) as book_run:
@@ -1188,6 +1324,7 @@ def train_individual_arima_models_step(
                             params_to_log = {
                                 "isbn": book_data['book_isbn'],
                                 "title": book_data['book_title'],
+                                "git_commit_hash": git_commit_hash,
                                 "model_type": "SARIMA",
                                 "arima_p": book_data['best_params']['p'],  # Use prefixes to avoid conflicts
                                 "arima_d": book_data['best_params']['d'],
@@ -1213,9 +1350,52 @@ def train_individual_arima_models_step(
                             "optuna_trials": book_data['optimization_results'].get('n_trials', 0)
                         })
 
-                        # Add tags for easy filtering
+                        # Log book-specific dataset information
+                        try:
+                            # Filter consolidated data by this specific book's ISBN
+                            book_isbn = book_data['book_isbn']
+
+                            # Create book-specific training dataset by filtering consolidated data
+                            # Note: We use the stored train_length and test_length from book_data
+                            book_train_sample = pd.DataFrame({
+                                'ISBN': [book_isbn] * book_data.get('train_series_length', 1),
+                                'Volume': [0] * book_data.get('train_series_length', 1),  # Placeholder data
+                                'data_type': ['training'] * book_data.get('train_series_length', 1)
+                            })
+
+                            book_test_sample = pd.DataFrame({
+                                'ISBN': [book_isbn] * book_data.get('test_series_length', 1),
+                                'Volume': [0] * book_data.get('test_series_length', 1),  # Placeholder data
+                                'data_type': ['testing'] * book_data.get('test_series_length', 1)
+                            })
+
+                            # Log training dataset for this book
+                            book_training_dataset = mlflow.data.from_pandas(
+                                book_train_sample,
+                                source=f"book_{book_isbn}_training_data",
+                                name=f"training_data_book_{book_isbn}"
+                            )
+                            mlflow.log_input(book_training_dataset, context="training")
+
+                            # Log test dataset for this book
+                            book_test_dataset = mlflow.data.from_pandas(
+                                book_test_sample,
+                                source=f"book_{book_isbn}_test_data",
+                                name=f"test_data_book_{book_isbn}"
+                            )
+                            mlflow.log_input(book_test_dataset, context="testing")
+
+                            logger.info(f"📊 Logged dataset info for {book_isbn}: train_length={book_data.get('train_series_length', 0)}, test_length={book_data.get('test_series_length', 0)}")
+
+                        except Exception as dataset_error:
+                            logger.warning(f"⚠️ Failed to log dataset information for {book_data['book_isbn']}: {dataset_error}")
+
+                        # Add tags for easy filtering and parent-child linking
                         mlflow.set_tags({
                             "run_type": "individual_book",
+                            "parent_run_id": parent_run_id,
+                            "parent_experiment": pipeline_experiment_name,
+                            "git_commit_hash": git_commit_hash,
                             "isbn": book_data['book_isbn'],
                             "model_architecture": "SARIMA",
                             "optimization_engine": "optuna",
@@ -1235,11 +1415,28 @@ def train_individual_arima_models_step(
                                 try:
                                     saved_model = mlflow.statsmodels.load_model(model_path)
 
-                                    # Log the model to this run to create proper linkage
-                                    logged_model = mlflow.statsmodels.log_model(
-                                        statsmodels_model=saved_model,
-                                        artifact_path="model"
-                                    )
+                                    # Create proper input example for time series model
+                                    input_example = pd.DataFrame({
+                                        'start': [test_data.index[0] if not test_data.empty else pd.Timestamp.now()],
+                                        'end': [test_data.index[-1] if not test_data.empty else pd.Timestamp.now()]
+                                    })
+
+                                    # Log the model to this run with proper input example
+                                    try:
+                                        logged_model = mlflow.statsmodels.log_model(
+                                            statsmodels_model=saved_model,
+                                            artifact_path="model",
+                                            input_example=input_example,
+                                            signature=mlflow.models.infer_signature(input_example)
+                                        )
+                                    except Exception as signature_error:
+                                        # Fallback without signature if inference fails
+                                        logger.warning(f"Could not infer model signature: {signature_error}")
+                                        logged_model = mlflow.statsmodels.log_model(
+                                            statsmodels_model=saved_model,
+                                            artifact_path="model",
+                                            input_example=input_example
+                                        )
 
                                     # Use the run-based URI for registration (this creates the proper link)
                                     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
@@ -1249,17 +1446,21 @@ def train_individual_arima_models_step(
                                     # Fallback to file-based registration
                                     model_uri = f"file://{os.path.abspath(model_path)}"
 
-                                # Register model - now it will be properly linked to this run
-                                registered_model = mlflow.register_model(
-                                    model_uri=model_uri,
-                                    name=model_name,
-                                    tags={
-                                        "book_isbn": book_data['book_isbn'],
-                                        "book_title": book_data['book_title'],
-                                        "run_type": "individual_book",
-                                        "model_type": "SARIMA"
-                                    }
-                                )
+                                # Register model with retry logic - now it will be properly linked to this run
+                                @retry_mlflow_operation(max_retries=3, delay=2)
+                                def register_model_with_retry():
+                                    return mlflow.register_model(
+                                        model_uri=model_uri,
+                                        name=model_name,
+                                        tags={
+                                            "book_isbn": book_data['book_isbn'],
+                                            "book_title": book_data['book_title'],
+                                            "run_type": "individual_book",
+                                            "model_type": "SARIMA"
+                                        }
+                                    )
+
+                                registered_model = register_model_with_retry()
 
                                 mlflow.log_param("registered_model_version", registered_model.version)
                                 logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} to individual run")
@@ -1382,7 +1583,8 @@ def book_sales_arima_modeling_pipeline(
     max_seasonal_books: int = 50,
     train_arima: bool = True,
     n_trials: int = 10,  # Deprecated, use config instead
-    config: ARIMATrainingConfig = None
+    config: ARIMATrainingConfig = None,
+    pipeline_timestamp: str = None  # Timestamp for consistent naming
 ) -> Dict:
     """
     Complete book sales ARIMA modeling pipeline with Vertex AI deployment support and smart optimization.
@@ -1452,11 +1654,18 @@ def book_sales_arima_modeling_pipeline(
     arima_results = None
     if train_arima:
         logger.info("Starting individual ARIMA model training with smart optimization")
+
+        # Use provided timestamp or create one for consistent ZenML/MLflow naming
+        if pipeline_timestamp is None:
+            import datetime
+            pipeline_timestamp = datetime.datetime.now().strftime("%m%d_%H%M")  # MMDD_HHMM format
+
         arima_results = train_individual_arima_models_step(
             train_data=train_data,
             test_data=test_data,
             selected_isbns=selected_isbns,
             output_dir=output_dir,
+            timestamp=pipeline_timestamp,  # Pass timestamp for consistent naming
             n_trials=n_trials,  # Deprecated parameter for backward compatibility
             config=config
         )
@@ -1485,15 +1694,26 @@ if __name__ == "__main__":
     config = get_arima_config(
         environment='development',
         n_trials=3,  # Fast development mode
-        force_retrain=False  # Enable smart retraining for demo
+        force_retrain=True  # Enable smart retraining for production efficiency
     )
 
     print(f"🔧 Using configuration: {config.environment} mode")
     print(f"   Trials: {config.n_trials}, Force retrain: {config.force_retrain}")
     print(f"   Smart retraining: {'Enabled' if not config.force_retrain else 'Disabled'}")
 
+    # Create custom pipeline run name (scalable format with timestamp for uniqueness)
+    import datetime
+    timestamp = datetime.datetime.now().strftime("%m%d_%H%M")  # MMDD_HHMM format (shorter)
+    num_books = len(DEFAULT_TEST_ISBNS)
+    git_hash = get_git_commit_hash()
+    custom_pipeline_name = f"book_sales_arima_pipeline_{num_books}books_{git_hash}_{timestamp}"
+
+    print(f"🏷️  Pipeline run name: {custom_pipeline_name}")
+
     # Run the optimized ARIMA modeling pipeline with smart retraining
-    results = book_sales_arima_modeling_pipeline(
+    results = book_sales_arima_modeling_pipeline.with_options(
+        run_name=custom_pipeline_name
+    )(
         output_dir=output_dir,
         selected_isbns=DEFAULT_TEST_ISBNS,  # Use the 2 specific books: Alchemist and Caterpillar
         column_name='Volume',
@@ -1502,7 +1722,8 @@ if __name__ == "__main__":
         max_seasonal_books=DEFAULT_MAX_SEASONAL_BOOKS,  # Not used when specific ISBNs provided
         train_arima=True,  # Enable ARIMA training
         n_trials=3,  # Deprecated, config.n_trials will be used instead
-        config=config  # Use optimized configuration
+        config=config,  # Use optimized configuration
+        pipeline_timestamp=timestamp  # Pass timestamp for consistent ZenML/MLflow naming
     )
 
     # Print results summary
