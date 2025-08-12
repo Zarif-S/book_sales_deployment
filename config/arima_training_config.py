@@ -11,6 +11,14 @@ from dataclasses import dataclass
 import json
 from pathlib import Path
 
+# Pipeline Constants
+DEFAULT_TEST_ISBNS = [
+    '9780722532935',  # The Alchemist
+    #'9780241003008',  # Very Hungry Caterpillar, The
+]
+DEFAULT_SPLIT_SIZE = 32
+DEFAULT_MAX_SEASONAL_BOOKS = 15
+
 
 @dataclass
 class ARIMATrainingConfig:

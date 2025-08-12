@@ -1,6 +1,35 @@
 import pandas as pd
 import os
 from typing import Tuple
+from utils.zenml_helpers import ensure_datetime_index
+from zenml.logger import get_logger
+
+# Initialize logger
+logger = get_logger(__name__)
+
+
+def filter_book_data(df: pd.DataFrame, isbn: str, clean_for_modeling: bool = False) -> pd.DataFrame:
+    """
+    Filter DataFrame for specific book ISBN with optional cleaning for time series modeling.
+    
+    Args:
+        df: Source DataFrame
+        isbn: Book ISBN to filter for
+        clean_for_modeling: If True, remove identifier columns and ensure datetime index
+        
+    Returns:
+        Filtered DataFrame
+    """
+    filtered_df = df[df['ISBN'] == isbn].copy()
+    
+    if clean_for_modeling and not filtered_df.empty:
+        # Ensure datetime index before removing columns
+        filtered_df = ensure_datetime_index(filtered_df, isbn)
+        # Remove identifier columns for time series modeling (but preserve datetime index)
+        filtered_df = filtered_df.drop(columns=['ISBN', 'Title', 'End Date'], errors='ignore')
+    
+    return filtered_df
+
 
 def prepare_data_after_2012(book_data: pd.DataFrame, column_name: str, split_size: int = 32, output_dir: str = None) -> Tuple[pd.DataFrame, pd.DataFrame]:
     """
