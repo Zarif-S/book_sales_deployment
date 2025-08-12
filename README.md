@@ -211,6 +211,10 @@ mlflow ui
 - Model artifacts and plots
 - Individual book model comparisons
 
+## ☁️ Production MLOps Architecture
+
+For production deployment with ZenML, Vertex AI, and MLflow, see detailed architecture overview and setup instructions in **`DEPLOYMENT_README.md`**.
+
 ## 🔧 Development
 
 ### Running Tests

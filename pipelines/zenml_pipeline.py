@@ -1365,7 +1365,8 @@ docker_settings = DockerSettings(
         "mlflow>=2.3.0",
         "scipy>=1.10.0",
         "scikit-learn>=1.3.0",
-        "statsmodels>=0.14.0"
+        "statsmodels>=0.14.0",
+        "click<8.1.8"  # Fix ZenML click dependency conflict
     ],
     parent_image="zenmldocker/zenml:0.84.2-py3.10"
 )
