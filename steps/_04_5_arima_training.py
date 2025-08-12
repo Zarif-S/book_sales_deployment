@@ -1,87 +1,34 @@
-# Standard library imports
-import os
-import sys
-import json
-from typing import Tuple, Annotated, Dict, List, Any
+"""
+ARIMA Training Step
 
-# Third-party imports
+This module contains ARIMA model training functionality, including
+individual model training, MLflow logging, and model management.
+"""
+
+import os
 import pandas as pd
 import numpy as np
+import json
+import pickle
 import mlflow
-
-# ZenML imports
-from zenml import step, pipeline
-from zenml.config import DockerSettings
+import mlflow.statsmodels
+from typing import Dict, List, Any, Annotated
+from zenml import step
 from zenml.logger import get_logger
 from zenml import ArtifactConfig
-from zenml.integrations.pandas.materializers.pandas_materializer import PandasMaterializer
-
-# Local step imports
-from steps._01_load_data import get_isbn_data, get_uk_weekly_data
-from steps._02_preprocessing import preprocess_loaded_data
-from steps._02_5_data_quality import create_quality_report_step, parse_quality_report_step
-from steps._03_5_modelling_prep import (
-    prepare_data_after_2012,
-    prepare_multiple_books_data,
-    filter_book_data
-)
-from steps._04_5_arima_training import train_individual_arima_models_step
-
-# Import seasonality configuration
-sys.path.append(os.path.join(os.path.dirname(__file__), '..', 'outputs', 'seasonality_analysis'))
-try:
-    from seasonality_config import SeasonalityConfig
-except ImportError:
-    SeasonalityConfig = None
-
-# Configuration and utility imports
-from config.arima_training_config import (
-    ARIMATrainingConfig, 
-    get_arima_config,
-    DEFAULT_TEST_ISBNS,
-    DEFAULT_SPLIT_SIZE, 
-    DEFAULT_MAX_SEASONAL_BOOKS
-)
-from utils.model_reuse import ModelRetrainDecisionEngine, create_retraining_engine
-from utils.zenml_helpers import _add_step_metadata, _create_basic_data_metadata, ensure_datetime_index
+from config.arima_training_config import ARIMATrainingConfig, get_arima_config
+from utils.model_reuse import create_retraining_engine
+from utils.zenml_helpers import _add_step_metadata, create_step_metadata
 
 # Initialize logger
 logger = get_logger(__name__)
 
-# Configure step settings to enable metadata
-step_settings = {
-    "enable_artifact_metadata": True,
-    "enable_artifact_visualization": True,
-}
-
-# Helper functions for common operations
-
-
-
-
-def create_step_metadata(base_data: dict, **additional_metadata) -> dict:
-    """
-    Create standardized metadata dictionary with string conversion.
-
-    Args:
-        base_data: Base metadata dictionary
-        **additional_metadata: Additional key-value pairs to include
-
-    Returns:
-        Metadata dictionary with all values converted to strings
-    """
-    metadata = base_data.copy()
-    metadata.update(additional_metadata)
-
-    # Convert all values to strings for ZenML compatibility
-    return {k: str(v) for k, v in metadata.items()}
 
 def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
     """
     Cleanup old MLflow model artifacts to prevent disk space issues.
     Keeps only the most recent `max_models_per_book` model.statsmodels files per book.
     """
-
     try:
         # Find all model.statsmodels files and extract book information
         model_files_by_book = {}
@@ -159,37 +106,13 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
     except Exception as e:
         logger.warning(f"⚠️  Model cleanup failed: {e}")
 
-def _add_step_metadata(output_name: str, metadata_dict: dict) -> None:
-    """Helper function to add metadata to step outputs with error handling."""
-    try:
-        context = get_step_context()
-        context.add_output_metadata(
-            output_name=output_name,
-            metadata=metadata_dict
-        )
-        logger.info(f"Successfully added {output_name} metadata")
-    except Exception as e:
-        logger.error(f"Failed to add {output_name} metadata: {e}")
-
-def _create_basic_data_metadata(df: pd.DataFrame, source: str) -> dict:
-    """Helper function to create basic metadata for DataFrames."""
-    return {
-        "total_records": str(len(df)),
-        "columns": str(list(df.columns) if hasattr(df, 'columns') else []),
-        "data_shape": f"{df.shape[0]} rows x {df.shape[1]} columns",
-        "source": source,
-        "missing_values": str(df.isna().sum().to_dict())
-    }
-
-# ------------------ HELPER FUNCTIONS ------------------ #
 
 def train_models_from_consolidated_data(
     train_data: pd.DataFrame,
     test_data: pd.DataFrame,
     book_isbns: List[str],
     output_dir: str,
-    config: ARIMATrainingConfig = None,
-    n_trials: int = None  # Deprecated, use config.n_trials instead
+    config: ARIMATrainingConfig = None
 ) -> Dict[str, Any]:
     """
     Train individual ARIMA models for each book using consolidated DataFrames with smart retraining.
@@ -200,6 +123,8 @@ def train_models_from_consolidated_data(
     - Smart model reuse to avoid unnecessary retraining
     - Performance-based retraining triggers
     - Comprehensive logging and monitoring
+    
+    Note: Deprecated n_trials parameter has been removed. Use config.n_trials instead.
     """
     from steps._04_arima_standalone import (
         create_time_series_from_df,
@@ -207,13 +132,12 @@ def train_models_from_consolidated_data(
         train_final_arima_model,
         evaluate_forecast
     )
+    from steps._03_5_modelling_prep import filter_book_data
 
     # Initialize configuration if not provided
     if config is None:
         config = get_arima_config()
         logger.info(f"Using default configuration for environment: {config.environment}")
-
-    # Note: Deprecated n_trials parameter support has been removed. Use config.n_trials instead.
 
     # Log configuration
     config.log_configuration(logger)
@@ -443,8 +367,6 @@ def train_models_from_consolidated_data(
                 test_predictions = final_model.forecast(steps=len(test_series))
                 evaluation_metrics = evaluate_forecast(test_series.values, test_predictions.values)
 
-            # MLflow logging moved outside try block to prevent training failures
-
             # Save model using MLflow format (production-ready)
             book_output_dir = os.path.join(output_dir, f'book_{book_isbn}')
             os.makedirs(book_output_dir, exist_ok=True)
@@ -626,438 +548,6 @@ def train_models_from_consolidated_data(
         }
     }
 
-# ------------------ STEPS ------------------ #
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
-)
-def load_isbn_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="isbn_data")]:
-    """Load ISBN data from GCS bucket and return as DataFrame artifact."""
-    logger.info("Starting ISBN data loading from GCS")
-    try:
-        # Load data directly from GCS bucket
-        gcs_path = "gs://book-sales-deployment-artifacts/raw_data/ISBN_data.csv"
-        df_isbns = pd.read_csv(gcs_path)
-
-        metadata_dict = _create_basic_data_metadata(df_isbns, "GCS - ISBN data")
-        logger.info(f"ISBN data metadata: {metadata_dict}")
-
-        _add_step_metadata("isbn_data", metadata_dict)
-        logger.info(f"Loaded {len(df_isbns)} ISBN records from GCS")
-        return df_isbns
-
-    except Exception as e:
-        logger.error(f"Failed to load ISBN data from GCS: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
-)
-def load_uk_weekly_data_step() -> Annotated[pd.DataFrame, ArtifactConfig(name="uk_weekly_data")]:
-    """Load UK weekly data from GCS bucket and return as DataFrame artifact."""
-    logger.info("Starting UK weekly data loading from GCS")
-    try:
-        # Load data directly from GCS bucket
-        gcs_path = "gs://book-sales-deployment-artifacts/raw_data/UK_weekly_data.csv"
-        df_uk_weekly = pd.read_csv(gcs_path)
-
-        metadata_dict = _create_basic_data_metadata(df_uk_weekly, "GCS - UK weekly data")
-        logger.info(f"UK weekly data metadata: {metadata_dict}")
-
-        _add_step_metadata("uk_weekly_data", metadata_dict)
-        logger.info(f"Loaded {len(df_uk_weekly)} UK weekly records from GCS")
-        return df_uk_weekly
-
-    except Exception as e:
-        logger.error(f"Failed to load UK weekly data from GCS: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
-)
-def preprocess_and_merge_step(
-    df_isbns: pd.DataFrame,
-    df_uk_weekly: pd.DataFrame
-) -> Annotated[pd.DataFrame, ArtifactConfig(name="merged_data")]:
-    """Preprocess and merge ISBN and UK weekly data using the new pipeline."""
-    logger.info("Starting preprocessing and merging of loaded data")
-    try:
-        processed = preprocess_loaded_data(df_isbns, df_uk_weekly)
-        df_merged = processed['df_uk_weekly']
-        logger.info(f"Preprocessing and merging complete. Shape: {df_merged.shape}")
-        return df_merged
-    except Exception as e:
-        logger.error(f"Failed to preprocess and merge data: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-)
-def create_quality_report_step(df_merged: pd.DataFrame) -> Annotated[str, ArtifactConfig(name="data_quality_report")]:
-    """Analyze data quality and return quality metrics as JSON string."""
-    logger.info("Starting data quality analysis")
-    try:
-        # Calculate quality metrics
-        total_records = len(df_merged)
-        missing_values = df_merged.isna().sum()
-        missing_percentage = (missing_values / total_records * 100).round(2)
-
-        # Unique values analysis
-        unique_counts = {}
-        for col in df_merged.columns:
-            unique_counts[col] = int(df_merged[col].nunique())  # Convert to int for JSON serialization
-
-        # Data types
-        data_types = df_merged.dtypes.astype(str).to_dict()
-
-        # Basic statistics for numeric columns
-        numeric_stats = {}
-        numeric_cols = df_merged.select_dtypes(include=['number']).columns
-        for col in numeric_cols:
-            numeric_stats[col] = {
-                'mean': float(df_merged[col].mean()),
-                'std': float(df_merged[col].std()),
-                'min': float(df_merged[col].min()),
-                'max': float(df_merged[col].max()),
-                'median': float(df_merged[col].median())
-            }
-
-        quality_report = {
-            "total_records": total_records,
-            "total_columns": len(df_merged.columns),
-            "missing_values_count": missing_values.to_dict(),
-            "missing_values_percentage": missing_percentage.to_dict(),
-            "unique_values_per_column": unique_counts,
-            "data_types": data_types,
-            "numeric_statistics": numeric_stats,
-            "quality_score": round((1 - missing_values.sum() / (total_records * len(df_merged.columns))) * 100, 2)
-        }
-
-        # Convert to JSON string for ZenML compatibility
-        quality_report_json = json.dumps(quality_report, indent=2, default=str)
-
-        logger.info(f"Data quality analysis completed. Quality score: {quality_report['quality_score']}%")
-
-        quality_metadata = {
-            "quality_score": str(quality_report['quality_score']),
-            "total_records": str(quality_report['total_records']),
-            "total_columns": str(quality_report['total_columns'])
-        }
-        _add_step_metadata("data_quality_report", quality_metadata)
-
-        return quality_report_json
-
-    except Exception as e:
-        logger.error(f"Failed to analyze data quality: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-)
-def save_processed_data_step(
-    df_merged: pd.DataFrame,
-    output_dir: str
-) -> Annotated[str, ArtifactConfig(name="processed_data_path")]:
-    """Save processed data to CSV and return file path."""
-    logger.info("Starting data saving")
-    try:
-        os.makedirs(output_dir, exist_ok=True)
-
-        # Save processed data
-        processed_file_path = os.path.join(output_dir, 'book_sales_processed.csv')
-        df_merged.to_csv(processed_file_path, index=False)
-
-        # Calculate file size
-        file_size_mb = round(os.path.getsize(processed_file_path) / (1024*1024), 2)
-
-        metadata_dict = {
-            "file_path": processed_file_path,
-            "file_size_mb": str(file_size_mb),
-            "total_records": str(len(df_merged)),
-            "total_columns": str(len(df_merged.columns)),
-            "file_format": "CSV",
-            "saved_at": pd.Timestamp.now().isoformat()
-        }
-
-        logger.info(f"Data saving metadata: {metadata_dict}")
-
-        _add_step_metadata("processed_data_path", metadata_dict)
-
-        logger.info(f"Processed data saved to {processed_file_path}")
-        return processed_file_path
-
-    except Exception as e:
-        logger.error(f"Failed to save processed data: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True
-)
-def select_modeling_books_step(
-    df_merged: pd.DataFrame,
-    use_seasonality_filter: bool = True,
-    max_books: int = DEFAULT_MAX_SEASONAL_BOOKS
-) -> Annotated[List[str], ArtifactConfig(name="selected_isbns")]:
-    """
-    Filter books based on seasonality analysis to select optimal books for SARIMA modeling.
-    """
-    logger.info("Starting seasonal book filtering")
-
-    try:
-        if not use_seasonality_filter or SeasonalityConfig is None:
-            logger.info("Seasonality filtering disabled or config unavailable, using top volume books")
-            # Get top books by volume if seasonality filtering is disabled
-            isbn_volumes = df_merged.groupby('ISBN')['Volume'].sum().sort_values(ascending=False)
-            selected_isbns = isbn_volumes.head(max_books).index.astype(str).tolist()
-        else:
-            # Get seasonal books from the analysis
-            seasonal_isbns = SeasonalityConfig.get_seasonal_books()
-            seasonal_isbns_str = [str(isbn) for isbn in seasonal_isbns]
-
-            logger.info(f"Found {len(seasonal_isbns_str)} seasonal books from analysis")
-
-            # Filter to books that exist in our dataset
-            available_isbns = set(df_merged['ISBN'].astype(str).unique())
-            available_seasonal_isbns = [isbn for isbn in seasonal_isbns_str if isbn in available_isbns]
-
-            logger.info(f"Found {len(available_seasonal_isbns)} seasonal books available in dataset")
-
-            if len(available_seasonal_isbns) > max_books:
-                # Prioritize by volume if we have too many seasonal books
-                seasonal_volumes = df_merged[df_merged['ISBN'].astype(str).isin(available_seasonal_isbns)].groupby('ISBN')['Volume'].sum()
-                top_seasonal = seasonal_volumes.sort_values(ascending=False).head(max_books)
-                selected_isbns = top_seasonal.index.astype(str).tolist()
-                logger.info(f"Selected top {len(selected_isbns)} seasonal books by volume")
-            else:
-                selected_isbns = available_seasonal_isbns
-                logger.info(f"Using all {len(selected_isbns)} available seasonal books")
-
-        # Add metadata
-        metadata_dict = {
-            "seasonality_filter_used": str(use_seasonality_filter and SeasonalityConfig is not None),
-            "total_seasonal_candidates": str(len(SeasonalityConfig.get_seasonal_books()) if SeasonalityConfig else 0),
-            "selected_books_count": str(len(selected_isbns)),
-            "max_books_limit": str(max_books),
-            "selection_timestamp": pd.Timestamp.now().isoformat()
-        }
-
-        _add_step_metadata("selected_isbns", metadata_dict)
-
-        logger.info(f"Selected {len(selected_isbns)} books for modeling")
-        return selected_isbns
-
-    except Exception as e:
-        logger.error(f"Failed to filter seasonal books: {e}")
-        raise
-
-@step(
-    enable_cache=True,
-    enable_artifact_metadata=True,
-    enable_artifact_visualization=True,
-    output_materializers=PandasMaterializer
-)
-def create_train_test_splits_step(
-    df_merged: pd.DataFrame,
-    output_dir: str,
-    selected_isbns: List[str] = None,
-    column_name: str = 'Volume',
-    split_size: int = DEFAULT_SPLIT_SIZE
-) -> Tuple[
-    Annotated[pd.DataFrame, ArtifactConfig(name="train_data")],
-    Annotated[pd.DataFrame, ArtifactConfig(name="test_data")]
-]:
-    """
-    Prepare data for modeling by splitting into train/test sets for selected books.
-    """
-    logger.info("Starting modelling data preparation")
-    try:
-        # Use default ISBNs if none provided
-        if selected_isbns is None or len(selected_isbns) == 0:
-            selected_isbns = DEFAULT_TEST_ISBNS
-
-        logger.info(f"Preparing modelling data for {len(selected_isbns)} books: {selected_isbns}")
-        logger.info(f"Using column: {column_name}, split size: {split_size}")
-
-        # Debug info
-        logger.info(f"ISBN column dtype: {df_merged['ISBN'].dtype}")
-        logger.info(f"Available columns in df_merged: {list(df_merged.columns)}")
-
-        if 'Volume' not in df_merged.columns:
-            logger.error("Volume column not found in df_merged!")
-            raise ValueError("Volume column not found in the merged dataframe")
-
-        # Ensure ISBNs are strings
-        if df_merged['ISBN'].dtype != 'object':
-            logger.info("Converting ISBN column to string type")
-            df_merged['ISBN'] = df_merged['ISBN'].astype(str)
-
-        # Filter data for selected ISBNs
-        selected_books_data = df_merged[df_merged['ISBN'].isin(selected_isbns)].copy()
-
-        if selected_books_data.empty:
-            raise ValueError(f"No data found for selected ISBNs: {selected_isbns}")
-
-        # Group data by ISBN for individual book analysis
-        books_data = {}
-        book_isbn_mapping = {}
-
-        for isbn in selected_isbns:
-            book_data = selected_books_data[selected_books_data['ISBN'] == isbn].copy()
-            if not book_data.empty:
-                book_title = book_data['Title'].iloc[0] if 'Title' in book_data.columns else f"Book_{isbn}"
-                books_data[book_title] = book_data
-                book_isbn_mapping[book_title] = isbn
-                logger.info(f"Found data for {book_title} (ISBN: {isbn}): {len(book_data)} records")
-            else:
-                logger.warning(f"No data found for ISBN: {isbn}")
-
-        if not books_data:
-            raise ValueError("No valid book data found for any of the selected ISBNs")
-
-        # Prepare train/test data for each book with CSV output
-        prepared_data = prepare_multiple_books_data(
-            books_data=books_data,
-            column_name=column_name,
-            split_size=split_size,
-            output_dir=output_dir
-        )
-
-        # Create metadata for the step (convert all to strings)
-        metadata_dict = {
-            "selected_isbns": str(selected_isbns),
-            "column_name": column_name,
-            "split_size": str(split_size),
-            "books_processed": str(list(prepared_data.keys())),
-            "total_books": str(len(prepared_data)),
-            "successful_preparations": str(sum(1 for train, test in prepared_data.values() if train is not None and test is not None)),
-            "preparation_timestamp": pd.Timestamp.now().isoformat()
-        }
-
-        # Add detailed info for each book
-        for book_name, (train_data, test_data) in prepared_data.items():
-            if train_data is not None and test_data is not None:
-                metadata_dict[f"{book_name}_train_shape"] = str(train_data.shape[0])
-                metadata_dict[f"{book_name}_test_shape"] = str(test_data.shape[0])
-                metadata_dict[f"{book_name}_train_range"] = f"{train_data.index.min()} to {train_data.index.max()}"
-                metadata_dict[f"{book_name}_test_range"] = f"{test_data.index.min()} to {test_data.index.max()}"
-
-
-        logger.info(f"Successfully prepared modelling data for {len(prepared_data)} books")
-
-        # Create consolidated DataFrames for ZenML artifacts (Vertex AI deployment ready)
-        # Individual book models will filter these by ISBN for training
-        consolidated_train_data = []
-        consolidated_test_data = []
-
-        for book_name, (train_data, test_data) in prepared_data.items():
-            if train_data is not None and test_data is not None:
-                # Add book identifiers to enable filtering
-                book_isbn = book_isbn_mapping.get(book_name, 'unknown')
-
-                # Prepare train data with identifiers
-                train_with_id = train_data.copy()
-                train_with_id['ISBN'] = book_isbn
-                train_with_id['Title'] = book_name
-                consolidated_train_data.append(train_with_id)
-
-                # Prepare test data with identifiers
-                test_with_id = test_data.copy()
-                test_with_id['ISBN'] = book_isbn
-                test_with_id['Title'] = book_name
-                consolidated_test_data.append(test_with_id)
-
-        # Combine all books into consolidated DataFrames with proper datetime index preservation
-        if consolidated_train_data:
-            # Ensure all DataFrames have proper datetime index before concatenation
-            for i, df in enumerate(consolidated_train_data):
-                if not pd.api.types.is_datetime64_any_dtype(df.index):
-                    consolidated_train_data[i] = ensure_datetime_index(df, f"train data book {i}")
-                    # Remove End Date column if it was used to restore index
-                    if 'End Date' in consolidated_train_data[i].columns:
-                        consolidated_train_data[i].drop(columns=['End Date'], inplace=True)
-
-            for i, df in enumerate(consolidated_test_data):
-                if not pd.api.types.is_datetime64_any_dtype(df.index):
-                    consolidated_test_data[i] = ensure_datetime_index(df, f"test data book {i}")
-                    # Remove End Date column if it was used to restore index
-                    if 'End Date' in consolidated_test_data[i].columns:
-                        consolidated_test_data[i].drop(columns=['End Date'], inplace=True)
-
-            train_df = pd.concat(consolidated_train_data, ignore_index=False)
-            test_df = pd.concat(consolidated_test_data, ignore_index=False)
-            logger.info(f"Created consolidated artifacts: train_df shape {train_df.shape}, test_df shape {test_df.shape}")
-            logger.info(f"Train index type: {type(train_df.index)}, Test index type: {type(test_df.index)}")
-        else:
-            train_df = pd.DataFrame()
-            test_df = pd.DataFrame()
-            logger.warning("No valid data for consolidated DataFrames")
-
-        # Keep CSV files for debugging/development
-        logger.info("Individual CSV files available for debugging, consolidated artifacts ready for production")
-
-        # Count successful book preparations for metadata
-        successful_books = sum(1 for train, test in prepared_data.values() if train is not None and test is not None)
-        individual_files_created = []
-        for book_name, (train_data, test_data) in prepared_data.items():
-            if train_data is not None and test_data is not None:
-                book_isbn = book_isbn_mapping.get(book_name, 'unknown')
-                individual_files_created.extend([
-                    f"train_data_{book_isbn}.csv",
-                    f"test_data_{book_isbn}.csv"
-                ])
-
-        # Add metadata for consolidated artifacts
-        train_metadata = {
-            "consolidated_artifacts": "true",
-            "deployment_ready": "true",
-            "successful_books": str(successful_books),
-            "consolidated_train_shape": str(train_df.shape) if not train_df.empty else "empty",
-            "books_included": str([book_isbn_mapping.get(name, name) for name in prepared_data.keys() if prepared_data[name][0] is not None]),
-            "individual_files_created": str(len(individual_files_created)),
-            "file_list": str(individual_files_created),
-            "filtering_example": f"train_data[train_data['ISBN'] == '{DEFAULT_TEST_ISBNS[0]}']",
-            "preparation_timestamp": pd.Timestamp.now().isoformat()
-        }
-        _add_step_metadata("train_data", train_metadata)
-
-        test_metadata = {
-            "consolidated_artifacts": "true",
-            "deployment_ready": "true",
-            "successful_books": str(successful_books),
-            "consolidated_test_shape": str(test_df.shape) if not test_df.empty else "empty",
-            "books_included": str([book_isbn_mapping.get(name, name) for name in prepared_data.keys() if prepared_data[name][1] is not None]),
-            "filtering_example": f"test_data[test_data['ISBN'] == '{DEFAULT_TEST_ISBNS[0]}']",
-            "note": "Filter consolidated artifacts by ISBN for individual book modeling",
-            "preparation_timestamp": pd.Timestamp.now().isoformat()
-        }
-        _add_step_metadata("test_data", test_metadata)
-
-        return train_df, test_df
-
-    except Exception as e:
-        logger.error(f"Failed to prepare modelling data: {e}")
-        raise
-
-# Helper steps to parse JSON outputs if needed
-@step
-def parse_quality_report_step(quality_report_json: str) -> Dict:
-    """Helper step to parse quality report JSON back to dict if needed by downstream steps."""
-    return json.loads(quality_report_json)
 
 @step(
     enable_cache=False,  # Disable cache to see fresh training run
@@ -1069,13 +559,13 @@ def train_individual_arima_models_step(
     test_data: pd.DataFrame,
     selected_isbns: List[str],
     output_dir: str,
-    n_trials: int = 10,  # Deprecated, use config instead
     config: ARIMATrainingConfig = None
 ) -> Annotated[Dict[str, Any], ArtifactConfig(name="arima_training_results")]:
     """
     Train individual SARIMA models for each selected book using consolidated artifacts with smart retraining.
 
     Enhanced with configuration-driven optimization and model reuse logic.
+    Note: Deprecated n_trials parameter has been removed. Use config parameter instead.
     """
     import mlflow
 
@@ -1085,7 +575,7 @@ def train_individual_arima_models_step(
     # Configure remote MLflow tracking server
     mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
     mlflow.set_tracking_uri(mlflow_tracking_uri)
-
+    
     # Set MLflow experiment name for this pipeline run
     experiment_name = "book_sales_arima_modeling_v2"
     mlflow.set_experiment(experiment_name)
@@ -1100,13 +590,12 @@ def train_individual_arima_models_step(
 
         logger.info(f"Training ARIMA models for ISBNs: {selected_isbns}")
         logger.info(f"Output directory: {arima_output_dir}")
-        logger.info(f"Optuna trials per book: {n_trials}")
 
         # Log enhanced pipeline-level parameters using ZenML's experiment tracker
         mlflow.log_params({
             "pipeline_type": "arima_training_optimized",
             "total_books": len(selected_isbns),
-            "n_trials": config.n_trials if config else n_trials,
+            "n_trials": config.n_trials if config else 10,
             "books": ",".join(selected_isbns),
             "output_directory": arima_output_dir,
             "config_environment": config.environment if config else "unknown",
@@ -1127,8 +616,7 @@ def train_individual_arima_models_step(
             test_data=test_data,
             book_isbns=selected_isbns,
             output_dir=arima_output_dir,
-            config=config,
-            n_trials=n_trials  # Deprecated parameter for backward compatibility
+            config=config
         )
 
         # Log enhanced pipeline-level summary metrics using ZenML's experiment tracker
@@ -1287,25 +775,23 @@ def train_individual_arima_models_step(
 
         logger.info(f"ARIMA training completed: {successful_models}/{total_books} models successful")
 
-        # MLflow logging is now handled individually per book in separate runs
-
-        # Add ZenML metadata
-        metadata_dict = {
-            "selected_isbns": str(selected_isbns),
-            "total_books": str(total_books),
-            "successful_models": str(successful_models),
-            "failed_models": str(failed_models),
+        # Add ZenML metadata using our helper functions
+        metadata_dict = create_step_metadata({
+            "selected_isbns": selected_isbns,
+            "total_books": total_books,
+            "successful_models": successful_models,
+            "failed_models": failed_models,
             "success_rate": f"{(successful_models/total_books*100):.1f}%" if total_books > 0 else "0%",
-            "n_trials": str(config.n_trials if config else n_trials),
+            "n_trials": config.n_trials if config else 10,
             "output_directory": arima_output_dir,
             "training_timestamp": pd.Timestamp.now().isoformat(),
-            "early_stopping_enabled": str(config.patience > 0 if config else True),
-            "patience": str(config.patience if config else 3),
-            "min_improvement": str(config.min_improvement if config else 0.5),
-            "min_trials": str(config.min_trials if config else 10),
+            "early_stopping_enabled": config.patience > 0 if config else True,
+            "patience": config.patience if config else 3,
+            "min_improvement": config.min_improvement if config else 0.5,
+            "min_trials": config.min_trials if config else 10,
             "config_environment": config.environment if config else "unknown",
-            "smart_retraining_enabled": str(config is not None)
-        }
+            "smart_retraining_enabled": config is not None
+        })
 
         # Add individual book performance if available
         book_results = training_results.get('book_results', {})
@@ -1340,233 +826,12 @@ def train_individual_arima_models_step(
             "training_timestamp": pd.Timestamp.now().isoformat()
         }
 
-        error_metadata = {
+        error_metadata = create_step_metadata({
             "error": str(e),
-            "selected_isbns": str(selected_isbns) if selected_isbns else "[]",
+            "selected_isbns": selected_isbns if selected_isbns else [],
             "training_timestamp": pd.Timestamp.now().isoformat()
-        }
+        })
 
         _add_step_metadata("arima_training_results", error_metadata)
 
         return error_results
-
-# Docker settings - let's go back to manual requirements for now
-docker_settings = DockerSettings(
-    requirements=[
-        "pandas>=2.0.0",
-        "numpy>=1.24.0",
-        "gcsfs>=2024.2.0",
-        "google-cloud-storage>=2.10.0",
-        "gdown>=5.2.0",
-        "openpyxl>=3.1.2",
-        "pmdarima>=2.0.4",
-        "optuna>=3.0.0",
-        "mlflow>=2.3.0",
-        "scipy>=1.10.0",
-        "scikit-learn>=1.3.0",
-        "statsmodels>=0.14.0",
-        "click<8.1.8"  # Fix ZenML click dependency conflict
-    ],
-    parent_image="zenmldocker/zenml:0.84.2-py3.10"
-)
-
-# ------------------ PIPELINE ------------------ #
-
-@pipeline(settings={"docker": docker_settings})
-def book_sales_arima_modeling_pipeline(
-    output_dir: str,
-    selected_isbns: List[str] = None,
-    column_name: str = 'Volume',
-    split_size: int = 32,
-    use_seasonality_filter: bool = True,
-    max_seasonal_books: int = 50,
-    train_arima: bool = True,
-    n_trials: int = 10,  # Deprecated, use config instead
-    config: ARIMATrainingConfig = None
-) -> Dict:
-    """
-    Complete book sales ARIMA modeling pipeline with Vertex AI deployment support and smart optimization.
-
-    This pipeline:
-    1. Loads ISBN and UK weekly sales data
-    2. Preprocesses and merges the data
-    3. Analyzes data quality
-    4. Saves processed data
-    5. Filters books based on seasonality analysis for optimal SARIMA modeling
-    6. Creates consolidated train/test artifacts for Vertex AI deployment
-    7. Trains individual SARIMA models with smart retraining logic
-    8. Logs all experiments and models to MLflow for tracking
-
-    Enhanced Features (v2):
-    - Smart model reuse to avoid unnecessary retraining
-    - Configuration-driven optimization (development/testing/production modes)
-    - Performance-based retraining triggers
-    - Environment-specific parameter tuning
-    - Consolidated artifacts enable efficient book filtering: train_data[train_data['ISBN'] == book_isbn]
-    - Individual SARIMA models per book (scalable to 5+ books)
-    - Vertex AI ready with ZenML artifact caching
-    - MLflow experiment tracking with hyperparameter optimization
-    """
-    logger.info("Running book sales ARIMA modeling pipeline")
-
-    # Load raw data
-    df_isbns = load_isbn_data_step()
-    df_uk_weekly = load_uk_weekly_data_step()
-
-    # Preprocess and merge
-    df_merged = preprocess_and_merge_step(df_isbns=df_isbns, df_uk_weekly=df_uk_weekly)
-
-    # Analyze data quality (now returns JSON string)
-    quality_report_json = create_quality_report_step(df_merged=df_merged)
-
-    # Save processed data
-    processed_data_path = save_processed_data_step(
-        df_merged=df_merged,
-        output_dir=output_dir
-    )
-
-    # Filter books based on seasonality analysis (if enabled)
-    if selected_isbns is None or len(selected_isbns) == 0:
-        selected_isbns = select_modeling_books_step(
-            df_merged=df_merged,
-            use_seasonality_filter=use_seasonality_filter,
-            max_books=max_seasonal_books
-        )
-        logger.info(f"Using seasonality-filtered books (artifact created)")
-    else:
-        logger.info(f"Using provided ISBNs (list provided)")
-
-    # Prepare data for modelling - now returns separate train and test data
-    train_data, test_data = create_train_test_splits_step(
-        df_merged=df_merged,
-        output_dir=output_dir,
-        selected_isbns=selected_isbns,
-        column_name=column_name,
-        split_size=split_size
-    )
-
-    # Optional: Parse JSON outputs back to dicts for pipeline return
-    quality_report = parse_quality_report_step(quality_report_json)
-
-    # Optional: Train individual ARIMA models with smart optimization
-    arima_results = None
-    if train_arima:
-        logger.info("Starting individual ARIMA model training with smart optimization")
-        arima_results = train_individual_arima_models_step(
-            train_data=train_data,
-            test_data=test_data,
-            selected_isbns=selected_isbns,
-            output_dir=output_dir,
-            n_trials=n_trials,  # Deprecated parameter for backward compatibility
-            config=config
-        )
-        logger.info("ARIMA training completed successfully")
-    else:
-        logger.info("ARIMA training skipped (train_arima=False)")
-
-    return {
-        "df_merged": df_merged,
-        "quality_report": quality_report,  # Parsed dict
-        "processed_data_path": processed_data_path,
-        "selected_isbns": selected_isbns,  # Selected ISBNs
-        "train_data": train_data,  # Training data artifact
-        "test_data": test_data,    # Test data artifact
-        "arima_results": arima_results,  # ARIMA training results
-    }
-
-# ------------------ MAIN ------------------ #
-
-if __name__ == "__main__":
-    # Set up output directory
-    project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-    output_dir = os.path.join(project_root, 'data', 'processed')
-
-    # Create configuration for development with smart retraining enabled
-    config = get_arima_config(
-        environment='development',
-        n_trials=3,  # Fast development mode
-        force_retrain=False  # Enable smart retraining for demo
-    )
-
-    print(f"🔧 Using configuration: {config.environment} mode")
-    print(f"   Trials: {config.n_trials}, Force retrain: {config.force_retrain}")
-    print(f"   Smart retraining: {'Enabled' if not config.force_retrain else 'Disabled'}")
-
-    # Run the optimized ARIMA modeling pipeline with smart retraining
-    results = book_sales_arima_modeling_pipeline(
-        output_dir=output_dir,
-        selected_isbns=DEFAULT_TEST_ISBNS,  # Use the 2 specific books: Alchemist and Caterpillar
-        column_name='Volume',
-        split_size=DEFAULT_SPLIT_SIZE,
-        use_seasonality_filter=False,
-        max_seasonal_books=DEFAULT_MAX_SEASONAL_BOOKS,  # Not used when specific ISBNs provided
-        train_arima=True,  # Enable ARIMA training
-        n_trials=3,  # Deprecated, config.n_trials will be used instead
-        config=config  # Use optimized configuration
-    )
-
-    # Print results summary
-    print("\n" + "="*60)
-    print("ARIMA MODELING PIPELINE EXECUTION COMPLETED")
-    print("="*60)
-    print("✅ Data processing and model training completed! Consolidated artifacts and models available.")
-
-    # Access pipeline outputs from ZenML response
-    try:
-        arima_results = results.steps["train_individual_arima_models_step"].outputs["arima_training_results"][0].load()
-    except Exception as e:
-        print(f"⚠️  Could not load ARIMA results from pipeline output: {e}")
-        # Try to get the step's return value directly
-        try:
-            step_metadata = results.steps["train_individual_arima_models_step"].metadata
-            print(f"📋 Available step metadata keys: {list(step_metadata.keys()) if step_metadata else 'None'}")
-        except Exception as meta_e:
-            print(f"⚠️  Could not access step metadata: {meta_e}")
-        arima_results = None
-
-    if arima_results:
-        total_books = arima_results.get('total_books', 0)
-        successful_models = arima_results.get('successful_models', 0)
-        reused_models = arima_results.get('reused_models', 0)
-        newly_trained = arima_results.get('newly_trained_models', 0)
-
-        print(f"✅ ARIMA training completed: {successful_models}/{total_books} models successful")
-
-        # Show optimization efficiency
-        if reused_models > 0:
-            reuse_rate = (reused_models / total_books * 100) if total_books > 0 else 0
-            print(f"⚡ Optimization efficiency: {reused_models} models reused, {newly_trained} newly trained ({reuse_rate:.1f}% reuse rate)")
-        else:
-            print(f"🔄 All {newly_trained} models were newly trained (first run or force_retrain=True)")
-
-        # Show configuration used
-        config_info = arima_results.get('configuration', {})
-        if config_info:
-            print(f"⚙️  Configuration: {config_info.get('environment', 'unknown')} mode, "
-                  f"{config_info.get('n_trials', 'unknown')} trials per book")
-
-        # Show individual book results
-        book_results = arima_results.get('book_results', {})
-        for isbn, book_result in book_results.items():
-            if 'evaluation_metrics' in book_result:
-                metrics = book_result['evaluation_metrics']
-                mae = metrics.get('mae', 0)
-                rmse = metrics.get('rmse', 0)
-                mape = metrics.get('mape', 0)
-                reused = " (reused)" if book_result.get('reused_existing_model', False) else " (newly trained)"
-                print(f"  📖 {isbn}: MAE={mae:.2f}, RMSE={rmse:.2f}, MAPE={mape:.1f}%{reused}")
-            elif 'error' in book_result:
-                print(f"  ❌ {isbn}: Training failed - {book_result['error']}")
-
-        print(f"📁 ARIMA models saved to: outputs/models/arima/")
-
-        # Show retraining stats if available
-        retraining_stats = arima_results.get('retraining_stats', {})
-        if retraining_stats.get('total_decisions', 0) > 0:
-            print(f"📊 Smart retraining stats: {retraining_stats['reuse_decisions']} reuse decisions, "
-                  f"{retraining_stats['retrain_decisions']} retrain decisions")
-    else:
-        print("⚠️  Could not retrieve ARIMA training results from pipeline output")
-        print("📝 Note: ARIMA training may have completed successfully but results are not accessible via pipeline artifacts")
-
-    print("="*60)
