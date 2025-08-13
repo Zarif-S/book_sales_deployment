@@ -14,7 +14,7 @@ from pathlib import Path
 # Pipeline Constants
 DEFAULT_TEST_ISBNS = [
     '9780722532935',  # The Alchemist
-    #'9780241003008',  # Very Hungry Caterpillar, The
+    '9780241003008',  # Very Hungry Caterpillar, The
 ]
 DEFAULT_SPLIT_SIZE = 32
 DEFAULT_MAX_SEASONAL_BOOKS = 15
@@ -43,7 +43,7 @@ class ARIMATrainingConfig:
     min_acceptable_rmse: Optional[float]
     max_acceptable_mape: Optional[float]
 
-    def __init__(self, environment: str = None, **kwargs):
+    def __init__(self, environment: Optional[str] = None, **kwargs: Any) -> None:
         """Initialize configuration with environment-specific defaults and overrides"""
 
         # Determine environment
@@ -69,7 +69,7 @@ class ARIMATrainingConfig:
                 # Fast development parameters for quick iteration
                 'n_trials': int(os.getenv('ARIMA_N_TRIALS', 3)),
                 'patience': int(os.getenv('ARIMA_PATIENCE', 1)),
-                'min_trials': int(os.getenv('ARIMA_MIN_TRIALS', 2)),
+                'min_trials': int(os.getenv('ARIMA_MIN_TRIALS', 1)),
                 'min_improvement': float(os.getenv('ARIMA_MIN_IMPROVEMENT', 0.5)),
                 'force_retrain': os.getenv('ARIMA_FORCE_RETRAIN', 'true').lower() == 'true',
                 'max_model_age_days': None,  # Age check disabled in dev
@@ -130,7 +130,7 @@ class ARIMATrainingConfig:
                 'load_if_exists': False
             }
 
-    def log_configuration(self, logger) -> None:
+    def log_configuration(self, logger: Any) -> None:
         """Log current configuration for debugging and monitoring"""
 
         logger.info(f"🔧 ARIMA Training Configuration ({self.environment} mode)")
@@ -176,7 +176,7 @@ class ARIMATrainingConfig:
             json.dump(self.to_dict(), f, indent=2)
 
 
-def get_arima_config(environment: str = None, **overrides) -> ARIMATrainingConfig:
+def get_arima_config(environment: Optional[str] = None, **overrides: Any) -> ARIMATrainingConfig:
     """
     Convenience function to get ARIMA training configuration.
 
@@ -198,17 +198,17 @@ def get_arima_config(environment: str = None, **overrides) -> ARIMATrainingConfi
 
 
 # Environment-specific factory functions for convenience
-def get_development_config(**overrides) -> ARIMATrainingConfig:
+def get_development_config(**overrides: Any) -> ARIMATrainingConfig:
     """Get development configuration with optional overrides"""
     return get_arima_config(environment='development', **overrides)
 
 
-def get_testing_config(**overrides) -> ARIMATrainingConfig:
+def get_testing_config(**overrides: Any) -> ARIMATrainingConfig:
     """Get testing configuration with optional overrides"""
     return get_arima_config(environment='testing', **overrides)
 
 
-def get_production_config(**overrides) -> ARIMATrainingConfig:
+def get_production_config(**overrides: Any) -> ARIMATrainingConfig:
     """Get production configuration with optional overrides"""
     return get_arima_config(environment='production', **overrides)
 
