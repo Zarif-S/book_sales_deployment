@@ -11,11 +11,11 @@ import hashlib
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
-from typing import Tuple, Optional, Dict, Any, List
+from typing import Tuple, Optional, Dict, Any
 from pathlib import Path
 from dataclasses import dataclass
 import mlflow
-import mlflow.statsmodels
+import mlflow.statsmodels  # type: ignore[attr-defined]
 from zenml.logger import get_logger
 
 from config.arima_training_config import ARIMATrainingConfig
@@ -44,7 +44,7 @@ class ModelInfo:
 class ModelRetrainDecisionEngine:
     """Decides whether models need retraining based on configurable criteria"""
 
-    def __init__(self, config: ARIMATrainingConfig, output_dir: str):
+    def __init__(self, config: ARIMATrainingConfig, output_dir: str) -> None:
         self.config = config
         self.output_dir = output_dir
         self.model_registry_path = Path(output_dir) / "model_registry.json"
@@ -93,18 +93,20 @@ class ModelRetrainDecisionEngine:
             book_test = test_data[test_data['ISBN'] == isbn] if 'ISBN' in test_data.columns else test_data
 
             # Create hash from data shape, values, and date range
+            volume_series = book_train['Volume'] if 'Volume' in book_train.columns else pd.Series([0])
             train_info = {
                 'shape': book_train.shape,
                 'columns': list(book_train.columns),
                 'date_range': [str(book_train.index.min()), str(book_train.index.max())],
-                'volume_sum': float(book_train.get('Volume', pd.Series([0])).sum()),
-                'volume_mean': float(book_train.get('Volume', pd.Series([0])).mean())
+                'volume_sum': float(volume_series.sum()),
+                'volume_mean': float(volume_series.mean())
             }
 
+            test_volume_series = book_test['Volume'] if 'Volume' in book_test.columns else pd.Series([0])
             test_info = {
                 'shape': book_test.shape,
                 'date_range': [str(book_test.index.min()), str(book_test.index.max())],
-                'volume_sum': float(book_test.get('Volume', pd.Series([0])).sum())
+                'volume_sum': float(test_volume_series.sum())
             }
 
             combined_info = json.dumps({
@@ -198,14 +200,14 @@ class ModelRetrainDecisionEngine:
                 try:
                     # Try to load from MLflow first
                     model_uri = f"models:/arima_book_{isbn}/{model_info.mlflow_model_version}"
-                    model = mlflow.statsmodels.load_model(model_uri)
+                    model = mlflow.statsmodels.load_model(model_uri)  # type: ignore[attr-defined]
                     self.logger.debug(f"Loaded model from MLflow: {model_uri}")
                 except Exception as mlflow_error:
                     self.logger.warning(f"MLflow model load failed: {mlflow_error}, trying file path")
-                    model = mlflow.statsmodels.load_model(model_info.model_path)
+                    model = mlflow.statsmodels.load_model(model_info.model_path)  # type: ignore[attr-defined]
             else:
                 # Load from file path
-                model = mlflow.statsmodels.load_model(model_info.model_path)
+                model = mlflow.statsmodels.load_model(model_info.model_path)  # type: ignore[attr-defined]
 
             # Prepare test data
             book_test_clean = book_test_data.drop(columns=['ISBN', 'Title', 'End Date'], errors='ignore')
@@ -215,10 +217,14 @@ class ModelRetrainDecisionEngine:
 
             # Make predictions
             test_predictions = model.forecast(steps=len(book_test_clean))
-            actual_values = book_test_clean['Volume'].values
+            
+            # Get actual values (handle both pandas Series and numpy array)
+            volume_data = book_test_clean['Volume']
+            actual_values = np.asarray(volume_data)
 
-            # Calculate RMSE
-            rmse = np.sqrt(np.mean((actual_values - test_predictions.values) ** 2))
+            # Calculate RMSE (convert predictions to numpy array regardless of type)
+            pred_values = np.asarray(test_predictions)
+            rmse = np.sqrt(np.mean((actual_values - pred_values) ** 2))
 
             self.logger.debug(f"Model validation for {isbn}: current RMSE={rmse:.2f}, baseline={model_info.baseline_rmse:.2f}")
             return rmse

@@ -35,7 +35,7 @@ This guide contains step-by-step instructions for deploying the complete MLOps p
 - Model artifact management and deployment staging
 
 **Google Cloud Storage:**
-- Raw CSV data: `gs://book-sales-deployment-artifacts/raw_data/`
+- Raw CSV data: `gs://book-sales-deployment-artifacts/raw_data/` # uploaded data to gcs bucket, this needs updating?
 - Pipeline artifacts: Intermediate data between steps
 - MLflow backend: Model binaries and metadata
 - Artifact versioning: Historical model archives
@@ -103,7 +103,7 @@ gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
     --member="serviceAccount:zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com" \
     --role="roles/aiplatform.user"
 
-# Storage permissions  
+# Storage permissions
 gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
     --member="serviceAccount:zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com" \
     --role="roles/storage.objectAdmin"
@@ -214,7 +214,7 @@ zenml artifact-store register gcs_store \
     --flavor=gcp \
     --path=gs://book-sales-deployment-artifacts
 
-# Create Vertex AI orchestrator  
+# Create Vertex AI orchestrator
 zenml orchestrator register vertex_orchestrator \
     --flavor=vertex \
     --project=upheld-apricot-468313-e0 \
@@ -242,10 +242,10 @@ zenml stack set vertex_stack
 # Check ZenML connection
 zenml status
 
-# Check ZenML stack configuration  
+# Check ZenML stack configuration
 zenml stack describe vertex_stack
 
-# Verify GCS data exists  
+# Verify GCS data exists
 gsutil ls gs://book-sales-deployment-artifacts/raw_data/
 
 # Test GCS bucket access
@@ -277,7 +277,7 @@ zenml 0.84.2 requires click<8.1.8,>=8.0.1, but you have click 8.1.8 which is inc
 docker_settings = DockerSettings(
     requirements=[
         "pandas>=2.0.0",
-        "numpy>=1.24.0", 
+        "numpy>=1.24.0",
         "gcsfs>=2024.2.0",
         "google-cloud-storage>=2.10.0",
         "gdown>=5.2.0",
@@ -516,7 +516,7 @@ python pipelines/zenml_pipeline.py
 
 ### Vertex AI Production
 ```bash
-zenml stack set vertex_stack  
+zenml stack set vertex_stack
 python pipelines/zenml_pipeline.py
 ```
 
@@ -524,7 +524,7 @@ python pipelines/zenml_pipeline.py
 ```python
 # Edit pipelines/zenml_pipeline.py, modify this section:
 config = get_arima_config(
-    environment='development',  # or 'testing', 'production'  
+    environment='development',  # or 'testing', 'production'
     n_trials=5,                # Number of optimization trials
     force_retrain=True         # Set to False for smart retraining
 )
@@ -533,7 +533,7 @@ config = get_arima_config(
 ## 📈 Monitoring & Results
 
 - **Check runs**: Visit MLflow dashboard for experiment tracking
-- **View logs**: Check ZenML dashboard for pipeline execution logs  
+- **View logs**: Check ZenML dashboard for pipeline execution logs
 - **Model artifacts**: Stored in GCS bucket under `/mlflow/artifacts/`
 - **Performance metrics**: MAE, RMSE, MAPE tracked per book in MLflow
 

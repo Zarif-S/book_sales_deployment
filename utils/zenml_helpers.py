@@ -1,9 +1,8 @@
 """
 ZenML Helper Utilities
 
-This module contains utility functions specifically for ZenML operations,
-including metadata management, step utilities, and common data operations
-used across the pipeline steps.
+This module contains ZenML-specific utility functions for metadata management
+and step operations.
 """
 
 import pandas as pd
@@ -72,25 +71,3 @@ def _create_basic_data_metadata(df: pd.DataFrame, source: str) -> dict:
         "source": source,
         "missing_values": str(df.isna().sum().to_dict())
     }
-
-
-def ensure_datetime_index(df: pd.DataFrame, book_identifier: str = "") -> pd.DataFrame:
-    """
-    Ensure DataFrame has proper datetime index, restore from 'End Date' if needed.
-    
-    Args:
-        df: DataFrame to process
-        book_identifier: Optional identifier for logging (e.g., ISBN or book name)
-    
-    Returns:
-        DataFrame with datetime index
-    """
-    if not pd.api.types.is_datetime64_any_dtype(df.index):
-        identifier_msg = f" for {book_identifier}" if book_identifier else ""
-        logger.warning(f"Data{identifier_msg} missing datetime index, attempting to restore")
-        if 'End Date' in df.columns:
-            df = df.set_index(pd.to_datetime(df['End Date']))
-            logger.info(f"Restored datetime index{identifier_msg}")
-        else:
-            logger.warning(f"No 'End Date' column found{identifier_msg}")
-    return df

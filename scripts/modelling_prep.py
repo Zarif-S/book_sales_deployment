@@ -1,7 +1,7 @@
 import pandas as pd
 import os
 from typing import Tuple
-from utils.zenml_helpers import ensure_datetime_index
+from utils.pipeline_utils import ensure_datetime_index
 from zenml.logger import get_logger
 
 # Initialize logger
