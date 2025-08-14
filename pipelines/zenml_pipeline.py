@@ -100,11 +100,12 @@ def get_git_commit_hash() -> str:
 def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
     """
     Cleanup old MLflow model artifacts to prevent disk space issues.
-    Keeps only the most recent `max_models_per_book` model.statsmodels files per book.
+    Keeps only the most recent `max_models_per_book` models per book.
+    Cleans both MLflow tracking data and actual model files in outputs directory.
     """
 
     try:
-        # Find all model.statsmodels files and extract book information
+        # Find all model.statsmodels files and extract book information from MLflow tracking
         model_files_by_book = {}
 
         # Search in both mlruns and mlartifacts directories
@@ -168,22 +169,49 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
                                 # For mlruns, store the run directory
                                 model_files_by_book[book_isbn].append((full_path, stat_info.st_mtime, stat_info.st_size, run_dir, None))
 
-        if not model_files_by_book:
+        # Also find models directly in the project outputs directory
+        outputs_dir = "outputs/models/arima"
+        outputs_models_by_book = {}
+        
+        if os.path.exists(outputs_dir):
+            logger.info(f"📂 Checking outputs directory: {outputs_dir}")
+            
+            for book_dir in os.listdir(outputs_dir):
+                if book_dir.startswith("book_") and os.path.isdir(os.path.join(outputs_dir, book_dir)):
+                    # Extract ISBN from directory name
+                    book_isbn = book_dir.replace("book_", "")
+                    if len(book_isbn) == 13 and book_isbn.isdigit():
+                        book_path = os.path.join(outputs_dir, book_dir)
+                        
+                        if book_isbn not in outputs_models_by_book:
+                            outputs_models_by_book[book_isbn] = []
+                        
+                        # Find all model directories for this book
+                        for item in os.listdir(book_path):
+                            item_path = os.path.join(book_path, item)
+                            if os.path.isdir(item_path) and item.startswith(f"arima_model_{book_isbn}"):
+                                stat_info = os.stat(item_path)
+                                # Calculate directory size
+                                dir_size = sum(os.path.getsize(os.path.join(dirpath, filename))
+                                             for dirpath, dirnames, filenames in os.walk(item_path)
+                                             for filename in filenames)
+                                outputs_models_by_book[book_isbn].append((item_path, stat_info.st_mtime, dir_size))
+
+        if not model_files_by_book and not outputs_models_by_book:
             logger.info("✅ Model cleanup: No models found with identifiable book ISBNs")
             return
 
         total_removed = 0
         total_size_removed = 0
 
-        # Process each book separately
+        # Process MLflow tracking cleanup
         for book_isbn, book_models in model_files_by_book.items():
             # Sort by modification time (newest first)
             book_models.sort(key=lambda x: x[1], reverse=True)
 
-            models_to_keep = len(book_models)
             models_to_remove = max(0, len(book_models) - max_models_per_book)
 
-            logger.info(f"📚 Book {book_isbn}: Found {len(book_models)} models, keeping {min(len(book_models), max_models_per_book)}")
+            logger.info(f"📚 Book {book_isbn} (MLflow): Found {len(book_models)} tracked models, keeping {min(len(book_models), max_models_per_book)}")
 
             if models_to_remove > 0:
                 # Remove old models for this book (keep the newest max_models_per_book)
@@ -204,7 +232,7 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
                             total_removed += 1
                             total_size_removed += size
                             dir_type = "mlartifacts" if "mlartifacts" in primary_dir else "mlruns"
-                            logger.info(f"🗑️  Removed old model for {book_isbn} ({dir_type}): {os.path.basename(primary_dir)} ({size/(1024*1024):.1f}MB)")
+                            logger.info(f"🗑️  Removed old MLflow tracking for {book_isbn} ({dir_type}): {os.path.basename(primary_dir)} ({size/(1024*1024):.1f}MB)")
 
                         # Also remove the corresponding mlruns directory if this was an mlartifacts entry
                         if secondary_dir and os.path.exists(secondary_dir):
@@ -213,11 +241,36 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
                             logger.info(f"🗑️  Removed corresponding mlruns entry for {book_isbn}: {os.path.basename(secondary_dir)}")
 
                     except Exception as e:
-                        logger.warning(f"⚠️  Failed to remove {file_path}: {e}")
+                        logger.warning(f"⚠️  Failed to remove MLflow tracking {file_path}: {e}")
+
+        # Process outputs directory cleanup
+        for book_isbn, book_models in outputs_models_by_book.items():
+            # Sort by modification time (newest first)
+            book_models.sort(key=lambda x: x[1], reverse=True)
+
+            models_to_remove = max(0, len(book_models) - max_models_per_book)
+
+            logger.info(f"📚 Book {book_isbn} (outputs): Found {len(book_models)} model files, keeping {min(len(book_models), max_models_per_book)}")
+
+            if models_to_remove > 0:
+                # Remove old model files for this book (keep the newest max_models_per_book)
+                models_to_delete = book_models[max_models_per_book:]
+
+                for model_path, mod_time, size in models_to_delete:
+                    try:
+                        if os.path.exists(model_path):
+                            import shutil
+                            shutil.rmtree(model_path)
+                            total_removed += 1
+                            total_size_removed += size
+                            logger.info(f"🗑️  Removed old model file for {book_isbn}: {os.path.basename(model_path)} ({size/(1024*1024):.1f}MB)")
+
+                    except Exception as e:
+                        logger.warning(f"⚠️  Failed to remove model file {model_path}: {e}")
 
         if total_removed > 0:
             size_mb = total_size_removed / (1024 * 1024)
-            logger.info(f"✅ Model cleanup completed: Removed {total_removed} old model runs ({size_mb:.1f}MB total)")
+            logger.info(f"✅ Model cleanup completed: Removed {total_removed} old models ({size_mb:.1f}MB total)")
         else:
             logger.info(f"✅ Model cleanup: All models within per-book limit of {max_models_per_book}")
 
@@ -562,12 +615,19 @@ def train_models_from_consolidated_data(
                     "training_data_length": len(train_series)
                 }
 
+                # Create proper input example for time series model
+                # MLflow TimeSeriesModel requires 'start' and 'end' columns
+                input_example = pd.DataFrame({
+                    "start": [str(test_series.index[0])],
+                    "end": [str(test_series.index[-1])]
+                })
+
                 # Save with MLflow
                 mlflow.statsmodels.save_model(
                     statsmodels_model=final_model,
                     path=model_path,
                     signature=model_signature,
-                    input_example=pd.DataFrame({"steps": [len(test_series)]}),
+                    input_example=input_example,
                     metadata=model_info
                 )
 
@@ -1147,7 +1207,8 @@ def train_individual_arima_models_step(
     output_dir: str,
     timestamp: str,  # Pipeline timestamp for consistent naming
     n_trials: int = 10,  # Deprecated, use config instead
-    config: ARIMATrainingConfig = None
+    config: ARIMATrainingConfig = None,
+    use_local_mlflow: bool = False  # Set to True to use local MLflow server
 ) -> Annotated[Dict[str, Any], ArtifactConfig(name="arima_training_results")]:
     """
     Train individual SARIMA models for each selected book using consolidated artifacts with smart retraining.
@@ -1159,8 +1220,16 @@ def train_individual_arima_models_step(
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
-    # Configure MLflow tracking server (use environment variable or default to local port 5001)
-    mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "http://127.0.0.1:5001")
+    # Configure MLflow tracking server based on use_local_mlflow parameter
+    if use_local_mlflow:
+        mlflow_tracking_uri = "http://127.0.0.1:5001"
+        logger.info("🏠 Using local MLflow server as requested")
+    else:
+        # Use remote MLflow server (default) or environment override
+        default_remote_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
+        mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", default_remote_uri)
+        logger.info("☁️  Using remote MLflow server")
+    
     mlflow.set_tracking_uri(mlflow_tracking_uri)
 
     # Set MLflow experiment name for parent pipeline runs
@@ -1173,7 +1242,7 @@ def train_individual_arima_models_step(
 
     try:
         # Create ARIMA output directory in outputs/models/arima
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+        project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Fixed: removed extra dirname call
         arima_output_dir = os.path.join(project_root, 'outputs', 'models', 'arima')
         os.makedirs(arima_output_dir, exist_ok=True)
 
@@ -1442,7 +1511,7 @@ def train_individual_arima_models_step(
                     logger.warning(f"⚠️ Failed to create individual run for {book_data['book_isbn']}: {book_run_error}")
 
             # Clean up old models after all individual runs are complete
-            cleanup_old_mlflow_models(max_models_per_book=2)
+            cleanup_old_mlflow_models(max_models_per_book=1)
 
             # Clean up the stored data
             book_run_count = len(train_models_from_consolidated_data._book_run_data)
@@ -1519,7 +1588,7 @@ def train_individual_arima_models_step(
 
         return error_results
 
-# Docker settings - updated for import fix rebuild 
+# Docker settings - updated for import fix rebuild
 docker_settings = DockerSettings(
     requirements=[
         "pandas>=2.0.0",
@@ -1534,8 +1603,9 @@ docker_settings = DockerSettings(
         "scipy>=1.10.0",
         "scikit-learn>=1.3.0",
         "statsmodels>=0.14.0",
-        "click<8.1.8",  # Fix ZenML click dependency conflict
-        "setuptools>=65.1.0"  # Force rebuild with error handling fixes
+        "click>=8.0.0,<8.1.8",  # Fix ZenML click dependency conflict
+        "setuptools>=65.2.0",  # Force rebuild with MLflow fixes
+        "requests>=2.25.0"  # For MLflow health checks
     ],
     parent_image="zenmldocker/zenml:0.84.2-py3.10"
 )
@@ -1553,7 +1623,8 @@ def book_sales_arima_modeling_pipeline(
     train_arima: bool = True,
     n_trials: int = 10,  # Deprecated, use config instead
     config: ARIMATrainingConfig = None,
-    pipeline_timestamp: str = None  # Timestamp for consistent naming
+    pipeline_timestamp: str = None,  # Timestamp for consistent naming
+    use_local_mlflow: bool = False  # Set to True to use local MLflow server
 ) -> Dict:
     """
     Complete book sales ARIMA modeling pipeline with Vertex AI deployment support and smart optimization.
@@ -1636,7 +1707,8 @@ def book_sales_arima_modeling_pipeline(
             output_dir=output_dir,
             timestamp=pipeline_timestamp,  # Pass timestamp for consistent naming
             n_trials=n_trials,  # Deprecated parameter for backward compatibility
-            config=config
+            config=config,
+            use_local_mlflow=use_local_mlflow  # Pass MLflow server preference
         )
         logger.info("ARIMA training completed successfully")
     else:
@@ -1669,6 +1741,7 @@ if __name__ == "__main__":
     print(f"🔧 Using configuration: {config.environment} mode")
     print(f"   Trials: {config.n_trials}, Force retrain: {config.force_retrain}")
     print(f"   Smart retraining: {'Enabled' if not config.force_retrain else 'Disabled'}")
+    print(f"   MLflow server: {'Local (127.0.0.1:5001)' if False else 'Remote (Cloud Run)'}")  # Change False to True for local MLflow
 
     # Create custom pipeline run name (scalable format with timestamp for uniqueness)
     import datetime
@@ -1692,7 +1765,8 @@ if __name__ == "__main__":
         train_arima=True,  # Enable ARIMA training
         n_trials=3,  # Deprecated, config.n_trials will be used instead
         config=config,  # Use optimized configuration
-        pipeline_timestamp=timestamp  # Pass timestamp for consistent ZenML/MLflow naming
+        pipeline_timestamp=timestamp,  # Pass timestamp for consistent ZenML/MLflow naming
+        use_local_mlflow=False  # Set to True for local MLflow, False for remote
     )
 
     # Print results summary

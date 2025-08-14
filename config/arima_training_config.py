@@ -42,6 +42,10 @@ class ARIMATrainingConfig:
     # Model quality thresholds
     min_acceptable_rmse: Optional[float]
     max_acceptable_mape: Optional[float]
+    
+    # MLflow configuration
+    mlflow_tracking_uri: str
+    mlflow_experiment_name: str
 
     def __init__(self, environment: str = None, **kwargs):
         """Initialize configuration with environment-specific defaults and overrides"""
@@ -49,15 +53,27 @@ class ARIMATrainingConfig:
         # Determine environment
         self.environment = environment or os.getenv('DEPLOYMENT_ENV', 'development').lower()
 
-        # Get base configuration for environment
+        # Set MLflow configuration (infrastructure-level, separate from optimization params)
+        # Default to remote for deployment, but allow local override via env var
+        default_mlflow_uri = 'https://mlflow-tracking-server-1076639696283.europe-west2.run.app'
+        if os.getenv('MLFLOW_LOCAL', 'false').lower() == 'true':
+            default_mlflow_uri = 'http://127.0.0.1:5001'
+        
+        self.mlflow_tracking_uri = os.getenv('MLFLOW_TRACKING_URI', default_mlflow_uri)
+        self.mlflow_experiment_name = os.getenv('MLFLOW_EXPERIMENT_NAME', 'book_sales_arima_modeling_v2')
+
+        # Get base configuration for environment (optimization parameters only)
         base_config = self._get_environment_config()
 
         # Apply any keyword argument overrides
         for key, value in kwargs.items():
             if hasattr(self, key) or key in base_config:
-                base_config[key] = value
+                if key in ['mlflow_tracking_uri', 'mlflow_experiment_name']:
+                    setattr(self, key, value)  # Set MLflow configs directly
+                else:
+                    base_config[key] = value  # Set optimization configs via base_config
 
-        # Set all attributes from final config
+        # Set all optimization attributes from final config
         for key, value in base_config.items():
             setattr(self, key, value)
 

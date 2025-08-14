@@ -38,7 +38,7 @@ try:
     import vertexai
 except ImportError as e:
     logger.error(f"Required packages not installed: {e}")
-    logger.info("Run: pip install mlflow google-cloud-aiplatform")
+    logger.info("Run: poetry install (dependencies are managed in pyproject.toml)")
     sys.exit(1)
 
 

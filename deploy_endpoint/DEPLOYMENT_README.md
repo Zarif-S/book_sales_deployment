@@ -551,38 +551,73 @@ config = get_arima_config(
 Once your models are trained and registered in MLflow, you can deploy them to Vertex AI endpoints for real-time inference:
 
 ```bash
+# Navigate to deployment directory
+cd deploy/
+
 # List available trained models
 python deploy_models.py --list-models
 
 # Deploy all book models to individual endpoints
 python deploy_models.py --deploy-all
 
-# Deploy a specific model
+# Deploy a specific model to a custom endpoint
 python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name book-sales-alchemist
 
 # Check current endpoints
 python deploy_models.py --list-endpoints
+
+# Use custom project/region (if different from defaults)
+python deploy_models.py --list-models --project-id your-project-id --region your-region
 ```
 
+**Default Configuration:**
+- **Project ID**: `upheld-apricot-468313-e0`
+- **Region**: `europe-west2` 
+- **MLflow URI**: `https://mlflow-tracking-server-1076639696283.europe-west2.run.app`
+
 ### Prerequisites for Endpoint Deployment
+
+**Required Dependencies:**
+```bash
+# Dependencies are managed by Poetry - ensure environment is up to date
+poetry install
+
+# Or if in existing environment, sync dependencies
+poetry install --sync
+
+# For cleaner command usage, activate Poetry shell (recommended):
+poetry shell
+# Now you can run python deploy_models.py directly without poetry run prefix
+```
 
 **Verify you have:**
 ✅ **Trained models**: Run your pipeline first to create MLflow models  
 ✅ **Authentication**: `gcloud auth login` completed  
 ✅ **Project access**: Vertex AI API enabled in your project  
-✅ **Dependencies**: `google-cloud-aiplatform` installed (already in pyproject.toml)  
+✅ **Dependencies**: Poetry environment with `mlflow` and `google-cloud-aiplatform` (includes `vertexai`) - already in `pyproject.toml`
 
 **Check prerequisites:**
 ```bash
 # Verify authentication
 gcloud auth list
 
+# Make sure you're authenticated for application default credentials
+gcloud auth application-default login
+
 # Check Vertex AI API is enabled
 gcloud services list --enabled --filter="name:aiplatform.googleapis.com"
 
 # Test MLflow connection
 curl -I https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+
+# Quick test - list models to verify everything works
+python deploy_models.py --list-models
 ```
+
+**If you see import errors:**
+The script will detect missing dependencies. Run `poetry install` to ensure all dependencies from `pyproject.toml` are installed.
+
+**Note**: If you prefer not to use `poetry shell`, you can run commands with `poetry run python deploy_models.py` instead.
 
 ### Deployment Process
 
@@ -593,19 +628,39 @@ curl -I https://mlflow-tracking-server-1076639696283.europe-west2.run.app
 
 ### Example Usage Scenarios
 
-**After training pipeline completes:**
+**1. Explore available models:**
 ```bash
-# Quick deployment of all models
-python deploy_models.py --deploy-all
+python deploy_models.py --list-models
+# Output example:
+# Found 3 book models:
+#   - arima_book_9780722532935 (v2, Production) - ISBN: 9780722532935
+#   - arima_book_9780241003008 (v1, Staging) - ISBN: 9780241003008
+#   - arima_book_9781234567890 (v1, None) - ISBN: 9781234567890
 ```
 
-**Deploy specific book model:**
+**2. After training pipeline completes:**
 ```bash
-# Deploy The Alchemist model
+# Quick deployment of all models (creates individual endpoints)
+python deploy_models.py --deploy-all
+# Output: Creates endpoints like book-sales-9780722532935, book-sales-9780241003008, etc.
+```
+
+**3. Deploy specific book model:**
+```bash
+# Deploy The Alchemist model to custom endpoint
 python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name book-sales-alchemist
 
-# Deploy Very Hungry Caterpillar model  
+# Deploy Very Hungry Caterpillar model to auto-named endpoint  
 python deploy_models.py --model-name arima_book_9780241003008 --endpoint-name book-sales-caterpillar
+
+# Deploy latest version of a model
+python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name my-endpoint
+```
+
+**4. Check deployment status:**
+```bash
+python deploy_models.py --list-endpoints
+# Shows all endpoints with model counts and IDs
 ```
 
 ### Monitoring & Management
@@ -629,7 +684,20 @@ open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
 - ✅ Endpoint creation and management
 - ✅ Model registry integration  
 - ✅ Basic deployment workflow
-- ⚠️ Simplified model serving (requires container setup for full deployment)
+- ✅ Automatic model discovery from MLflow
+- ✅ Batch deployment of all models
+- ⚠️ **Important**: Creates endpoints but requires additional container setup for full model serving
+
+**What the script does:**
+1. ✅ Connects to MLflow registry and discovers book models
+2. ✅ Creates or reuses Vertex AI endpoints  
+3. ✅ Prepares endpoints for model deployment
+4. ⚠️ Logs that additional containerization is needed for full serving
+
+**Next steps for production deployment:**
+- Package MLflow models in serving containers
+- Configure custom prediction containers
+- Set up model serving infrastructure
 
 **Production Enhancements (Post-Refactor):**
 - Custom prediction containers for MLflow models
@@ -656,11 +724,30 @@ By keeping endpoint deployment separate, we avoid coupling with the current pipe
 
 ### Troubleshooting
 
+**Import/Dependency Issues:**
+```bash
+# If you see "Required packages not installed" error:
+poetry install
+
+# Verify dependencies are available:
+# Option 1: If Poetry shell is activated
+python -c "import mlflow, google.cloud.aiplatform, vertexai; print('Dependencies OK')"
+
+# Option 2: Without activating shell
+poetry run python -c "import mlflow, google.cloud.aiplatform, vertexai; print('Dependencies OK')"
+
+# Check Poetry environment status:
+poetry show mlflow google-cloud-aiplatform
+```
+
 **Authentication Issues:**
 ```bash
 # Re-authenticate if needed
 gcloud auth login
 gcloud auth application-default login
+
+# Verify authentication status
+gcloud auth list
 ```
 
 **Permission Issues:**
@@ -669,15 +756,33 @@ gcloud auth application-default login
 gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
     --member="user:$(gcloud config get-value account)" \
     --role="roles/aiplatform.user"
+
+# Test permissions with a simple command
+python deploy_models.py --list-endpoints
 ```
 
 **Model Not Found:**
 ```bash
-# Check models exist in MLflow
+# Check models exist in MLflow (most common issue)
 python deploy_models.py --list-models
 
-# Verify MLflow server is accessible
+# If no models shown, verify:
+# 1. MLflow server is accessible
 curl https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+
+# 2. Pipeline has been run and models are registered
+# 3. Models follow naming convention: arima_book_*
+```
+
+**Script Arguments:**
+```bash
+# For help with all available options:
+python deploy_models.py --help
+
+# Common argument combinations:
+python deploy_models.py --model-name MODEL_NAME --endpoint-name ENDPOINT_NAME
+python deploy_models.py --deploy-all
+python deploy_models.py --list-models --project-id YOUR_PROJECT --region YOUR_REGION
 ```
 
 ---

@@ -423,12 +423,19 @@ def train_models_from_consolidated_data(
                     "training_data_length": len(train_series)
                 }
 
+                # Create proper input example for time series model
+                # MLflow TimeSeriesModel requires 'start' and 'end' columns
+                input_example = pd.DataFrame({
+                    "start": [str(test_series.index[0])],
+                    "end": [str(test_series.index[-1])]
+                })
+
                 # Save with MLflow
                 mlflow.statsmodels.save_model(
                     statsmodels_model=final_model,
                     path=model_path,
                     signature=model_signature,
-                    input_example=pd.DataFrame({"steps": [len(test_series)]}),
+                    input_example=input_example,
                     metadata=model_info
                 )
 
@@ -437,7 +444,7 @@ def train_models_from_consolidated_data(
                 logger.info(f"💾 Model saved and ready for MLflow registration via run-based approach")
 
                 # Clean up old models to prevent disk space issues
-                cleanup_old_mlflow_models(max_models_per_book=2)
+                cleanup_old_mlflow_models(max_models_per_book=1)
 
             except Exception as e:
                 logger.warning(f"MLflow save failed, falling back to pickle: {e}")
@@ -587,24 +594,52 @@ def train_individual_arima_models_step(
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
-    # Configure remote MLflow tracking server with error handling
+    # Initialize configuration to get MLflow settings
+    if config is None:
+        config = get_arima_config()
+
+    # TODO: Consider creating a dedicated deployment config file for cleaner infrastructure setup
+    # Configure MLflow tracking server with proper ZenML integration handling
     try:
-        mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
+        # Disable ZenML's automatic MLflow integration that conflicts with our setup
+        import os
+        import requests
+
+        # Remove any ZenML-set MLflow environment variables
+        for env_var in ['MLFLOW_TRACKING_URI', 'MLFLOW_EXPERIMENT_NAME', 'MLFLOW_EXPERIMENT_ID']:
+            os.environ.pop(env_var, None)
+
+        # Use configured MLflow server (local or remote based on config)
+        mlflow_tracking_uri = config.mlflow_tracking_uri
+
+        # Test connectivity to MLflow server before proceeding
+        try:
+            response = requests.get(f"{mlflow_tracking_uri}/health", timeout=10)
+            if response.status_code != 200:
+                raise Exception(f"MLflow server returned status {response.status_code}")
+            logger.info(f"✅ MLflow server health check passed")
+        except requests.RequestException as e:
+            raise Exception(f"Cannot connect to MLflow server: {e}")
+
+        # Set MLflow tracking URI
         mlflow.set_tracking_uri(mlflow_tracking_uri)
 
-        # Set MLflow experiment name for this pipeline run
-        experiment_name = "book_sales_arima_modeling_v2"
+        # Set MLflow experiment name from config
+        experiment_name = config.mlflow_experiment_name
         mlflow.set_experiment(experiment_name)
+
         logger.info(f"🧪 MLflow configured with remote server: {mlflow_tracking_uri}")
         logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
 
     except Exception as mlflow_error:
-        logger.info("Continuing without MLflow tracking")
+        logger.error(f"❌ MLflow configuration failed: {mlflow_error}")
+        logger.error("This will cause the step to fail as MLflow is required for model storage")
+        raise Exception(f"MLflow setup failed: {mlflow_error}") from mlflow_error
 
     try:
         # Create ARIMA output directory - use more robust path handling for containers
         try:
-            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # Fixed: removed extra dirname call
             arima_output_dir = os.path.join(project_root, 'outputs', 'models', 'arima')
         except Exception as path_error:
             logger.warning(f"Path calculation failed: {path_error}, using fallback")
@@ -617,8 +652,14 @@ def train_individual_arima_models_step(
         logger.info(f"Training ARIMA models for ISBNs: {selected_isbns}")
         logger.info(f"Output directory: {arima_output_dir}")
 
-        # Log enhanced pipeline-level parameters using ZenML's experiment tracker
+        # Log enhanced pipeline-level parameters using properly configured MLflow
         try:
+            # Ensure we're using our remote server
+            current_uri = mlflow.get_tracking_uri()
+            if "127.0.0.1" in current_uri or "localhost" in current_uri:
+                logger.warning(f"⚠️ MLflow URI was reset to {current_uri}, reconfiguring...")
+                mlflow.set_tracking_uri(mlflow_tracking_uri)
+
             mlflow.log_params({
                 "pipeline_type": "arima_training_optimized",
                 "total_books": len(selected_isbns),
@@ -629,12 +670,14 @@ def train_individual_arima_models_step(
                 "config_force_retrain": config.force_retrain if config else True,
                 "config_patience": config.patience if config else 3,
                 "config_min_improvement": config.min_improvement if config else 0.5,
-                "smart_retraining_enabled": config is not None
+                "smart_retraining_enabled": config is not None,
+                "mlflow_server": mlflow_tracking_uri
             })
             logger.info("✅ Logged pipeline parameters to MLflow")
         except Exception as param_error:
-            logger.warning(f"⚠️ Failed to log MLflow parameters: {param_error}")
-            logger.info("Continuing without parameter logging")
+            logger.error(f"❌ Failed to log MLflow parameters: {param_error}")
+            logger.error("This indicates MLflow connectivity issues")
+            raise Exception(f"MLflow parameter logging failed: {param_error}") from param_error
 
         # Initialize configuration if not provided
         if config is None:
@@ -655,29 +698,51 @@ def train_individual_arima_models_step(
                                training_results.get('total_books', 1) * 100)
         reuse_rate = training_results.get('optimization_efficiency', {}).get('reuse_rate', 0) * 100
 
-        mlflow.log_metrics({
-            "pipeline_success_rate": pipeline_success_rate,
-            "total_books": training_results.get('total_books', 0),
-            "successful_models": training_results.get('successful_models', 0),
-            "failed_models": training_results.get('failed_models', 0),
-            "reused_models": training_results.get('reused_models', 0),
-            "newly_trained_models": training_results.get('newly_trained_models', 0),
-            "model_reuse_rate_percent": reuse_rate,
-            "config_n_trials": config.n_trials,
-            "config_patience": config.patience
-        })
+        try:
+            # Ensure MLflow URI is still correct
+            current_uri = mlflow.get_tracking_uri()
+            if "127.0.0.1" in current_uri or "localhost" in current_uri:
+                logger.warning(f"⚠️ MLflow URI was reset to {current_uri}, reconfiguring...")
+                mlflow.set_tracking_uri(mlflow_tracking_uri)
+
+            mlflow.log_metrics({
+                "pipeline_success_rate": pipeline_success_rate,
+                "total_books": training_results.get('total_books', 0),
+                "successful_models": training_results.get('successful_models', 0),
+                "failed_models": training_results.get('failed_models', 0),
+                "reused_models": training_results.get('reused_models', 0),
+                "newly_trained_models": training_results.get('newly_trained_models', 0),
+                "model_reuse_rate_percent": reuse_rate,
+                "config_n_trials": config.n_trials,
+                "config_patience": config.patience
+            })
+            logger.info("✅ Logged pipeline metrics to MLflow")
+        except Exception as metrics_error:
+            logger.error(f"❌ Failed to log MLflow metrics: {metrics_error}")
+            # Continue without failing the entire step for metrics logging
 
         # Add enhanced pipeline-level tags to distinguish parent run from individual book runs
-        mlflow.set_tags({
-            "run_type": "pipeline_summary",
-            "architecture": "hybrid_tracking_optimized",
-            "individual_runs_created": "true",
-            "books_processed": ",".join(selected_isbns),
-            "scalable_approach": "parent_child_runs",
-            "smart_retraining": "enabled" if config else "disabled",
-            "config_environment": config.environment if config else "unknown",
-            "optimization_version": "v2"
-        })
+        try:
+            # Ensure MLflow URI is still correct
+            current_uri = mlflow.get_tracking_uri()
+            if "127.0.0.1" in current_uri or "localhost" in current_uri:
+                logger.warning(f"⚠️ MLflow URI was reset to {current_uri}, reconfiguring...")
+                mlflow.set_tracking_uri(mlflow_tracking_uri)
+
+            mlflow.set_tags({
+                "run_type": "pipeline_summary",
+                "architecture": "hybrid_tracking_optimized",
+                "individual_runs_created": "true",
+                "books_processed": ",".join(selected_isbns),
+                "scalable_approach": "parent_child_runs",
+                "smart_retraining": "enabled" if config else "disabled",
+                "config_environment": config.environment if config else "unknown",
+                "optimization_version": "v2"
+            })
+            logger.info("✅ Set pipeline tags in MLflow")
+        except Exception as tags_error:
+            logger.warning(f"⚠️ Failed to set MLflow tags: {tags_error}")
+            # Continue without failing the entire step
 
         logger.info(f"📊 Logged pipeline summary to MLflow: {pipeline_success_rate:.1f}% success rate")
 
