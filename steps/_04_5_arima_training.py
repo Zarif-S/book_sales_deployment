@@ -153,7 +153,7 @@ def train_models_from_consolidated_data(
     """
     from steps._04_arima_standalone import (
         create_time_series_from_df,
-        run_optuna_optimization,
+        run_optuna_optimization_with_early_stopping,
         train_final_arima_model,
         evaluate_forecast
     )
@@ -434,17 +434,7 @@ def train_models_from_consolidated_data(
 
                 logger.info(f"✅ Saved MLflow model to: {model_path}")
 
-                # Register model in MLflow Model Registry for production deployment
-                try:
-                    model_name = f"arima_book_{book_isbn}"
-                    registered_model = mlflow.register_model(
-                        model_uri=f"file://{os.path.abspath(model_path)}",
-                        name=model_name
-                    )
-                    logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} in MLflow Model Registry")
-                except Exception as registry_error:
-                    logger.warning(f"⚠️ Model registry failed (model still saved): {registry_error}")
-                    logger.info(f"📁 Model available at filesystem path: {model_path}")
+                logger.info(f"💾 Model saved and ready for MLflow registration via run-based approach")
 
                 # Clean up old models to prevent disk space issues
                 cleanup_old_mlflow_models(max_models_per_book=2)
@@ -597,38 +587,54 @@ def train_individual_arima_models_step(
     logger.info(f"Starting individual ARIMA training for {len(selected_isbns)} books")
     logger.info(f"Using consolidated artifacts: train_data shape {train_data.shape}, test_data shape {test_data.shape}")
 
-    # Configure remote MLflow tracking server
-    mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
-    mlflow.set_tracking_uri(mlflow_tracking_uri)
+    # Configure remote MLflow tracking server with error handling
+    try:
+        mlflow_tracking_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
+        mlflow.set_tracking_uri(mlflow_tracking_uri)
 
-    # Set MLflow experiment name for this pipeline run
-    experiment_name = "book_sales_arima_modeling_v2"
-    mlflow.set_experiment(experiment_name)
-    logger.info(f"🧪 MLflow configured with remote server: {mlflow_tracking_uri}")
-    logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
+        # Set MLflow experiment name for this pipeline run
+        experiment_name = "book_sales_arima_modeling_v2"
+        mlflow.set_experiment(experiment_name)
+        logger.info(f"🧪 MLflow configured with remote server: {mlflow_tracking_uri}")
+        logger.info(f"🧪 MLflow experiment set to: {experiment_name}")
+
+    except Exception as mlflow_error:
+        logger.info("Continuing without MLflow tracking")
 
     try:
-        # Create ARIMA output directory in outputs/models/arima
-        project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-        arima_output_dir = os.path.join(project_root, 'outputs', 'models', 'arima')
+        # Create ARIMA output directory - use more robust path handling for containers
+        try:
+            project_root = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+            arima_output_dir = os.path.join(project_root, 'outputs', 'models', 'arima')
+        except Exception as path_error:
+            logger.warning(f"Path calculation failed: {path_error}, using fallback")
+            # Fallback for container environments
+            arima_output_dir = os.path.join(output_dir, 'arima_models')
+
         os.makedirs(arima_output_dir, exist_ok=True)
+        logger.info(f"✅ Created output directory: {arima_output_dir}")
 
         logger.info(f"Training ARIMA models for ISBNs: {selected_isbns}")
         logger.info(f"Output directory: {arima_output_dir}")
 
         # Log enhanced pipeline-level parameters using ZenML's experiment tracker
-        mlflow.log_params({
-            "pipeline_type": "arima_training_optimized",
-            "total_books": len(selected_isbns),
-            "n_trials": config.n_trials if config else 10,
-            "books": ",".join(selected_isbns),
-            "output_directory": arima_output_dir,
-            "config_environment": config.environment if config else "unknown",
-            "config_force_retrain": config.force_retrain if config else True,
-            "config_patience": config.patience if config else 3,
-            "config_min_improvement": config.min_improvement if config else 0.5,
-            "smart_retraining_enabled": config is not None
-        })
+        try:
+            mlflow.log_params({
+                "pipeline_type": "arima_training_optimized",
+                "total_books": len(selected_isbns),
+                "n_trials": config.n_trials if config else 10,
+                "books": ",".join(selected_isbns),
+                "output_directory": arima_output_dir,
+                "config_environment": config.environment if config else "unknown",
+                "config_force_retrain": config.force_retrain if config else True,
+                "config_patience": config.patience if config else 3,
+                "config_min_improvement": config.min_improvement if config else 0.5,
+                "smart_retraining_enabled": config is not None
+            })
+            logger.info("✅ Logged pipeline parameters to MLflow")
+        except Exception as param_error:
+            logger.warning(f"⚠️ Failed to log MLflow parameters: {param_error}")
+            logger.info("Continuing without parameter logging")
 
         # Initialize configuration if not provided
         if config is None:
@@ -679,12 +685,8 @@ def train_individual_arima_models_step(
         if hasattr(train_models_from_consolidated_data, '_book_run_data'):
             logger.info(f"🔄 Creating {len(train_models_from_consolidated_data._book_run_data)} individual book runs...")
 
-            # End the current ZenML MLflow run to avoid conflicts
-            try:
-                mlflow.end_run()
-                logger.info("✅ Ended ZenML MLflow run before creating individual runs")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not end current MLflow run: {e}")
+            # Keep parent run active for proper nested run creation
+            logger.info("🔗 Creating nested runs under parent pipeline run")
 
             for book_data in train_models_from_consolidated_data._book_run_data:
                 try:
@@ -692,8 +694,8 @@ def train_individual_arima_models_step(
                     clean_title = book_data['book_title'].replace(' ', '_').replace(',', '').replace("'", '').replace('.', '')
                     book_run_name = f"book_{book_data['book_isbn']}_{clean_title[:15]}_{time.strftime('%H%M%S')}"
 
-                    # Create individual run outside ZenML context (sequential, not nested)
-                    with mlflow.start_run(run_name=book_run_name) as book_run:
+                    # Create individual nested run under parent pipeline run
+                    with mlflow.start_run(run_name=book_run_name, nested=True) as book_run:
                         logger.info(f"📖 Created individual run for {book_data['book_isbn']}: {book_run.info.run_id}")
 
                         try:
@@ -748,28 +750,12 @@ def train_individual_arima_models_step(
                                 try:
                                     saved_model = mlflow.statsmodels.load_model(model_path)
 
-                                    # Create proper input example for time series model
-                                    input_example = pd.DataFrame({
-                                        'start': [test_data.index[0] if not test_data.empty else pd.Timestamp.now()],
-                                        'end': [test_data.index[-1] if not test_data.empty else pd.Timestamp.now()]
-                                    })
-
-                                    # Log the model to this run with proper input example
-                                    try:
-                                        logged_model = mlflow.statsmodels.log_model(
-                                            statsmodels_model=saved_model,
-                                            artifact_path="model",
-                                            input_example=input_example,
-                                            signature=mlflow.models.infer_signature(input_example)
-                                        )
-                                    except Exception as signature_error:
-                                        # Fallback without signature if inference fails
-                                        logger.warning(f"Could not infer model signature: {signature_error}")
-                                        logged_model = mlflow.statsmodels.log_model(
-                                            statsmodels_model=saved_model,
-                                            artifact_path="model",
-                                            input_example=input_example
-                                        )
+                                    # Log the model to this run without problematic input examples
+                                    # Time series models work better without custom input examples
+                                    logged_model = mlflow.statsmodels.log_model(
+                                        statsmodels_model=saved_model,
+                                        artifact_path="model"
+                                    )
 
                                     # Use the run-based URI for registration (this creates the proper link)
                                     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"

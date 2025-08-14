@@ -544,6 +544,142 @@ config = get_arima_config(
 3. **Clean up old container images** in Artifact Registry
 4. **Review model performance** in MLflow dashboard
 
+## 🚀 Model Endpoint Deployment
+
+### Quick Start - Deploy Models to Vertex AI Endpoints
+
+Once your models are trained and registered in MLflow, you can deploy them to Vertex AI endpoints for real-time inference:
+
+```bash
+# List available trained models
+python deploy_models.py --list-models
+
+# Deploy all book models to individual endpoints
+python deploy_models.py --deploy-all
+
+# Deploy a specific model
+python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name book-sales-alchemist
+
+# Check current endpoints
+python deploy_models.py --list-endpoints
+```
+
+### Prerequisites for Endpoint Deployment
+
+**Verify you have:**
+✅ **Trained models**: Run your pipeline first to create MLflow models  
+✅ **Authentication**: `gcloud auth login` completed  
+✅ **Project access**: Vertex AI API enabled in your project  
+✅ **Dependencies**: `google-cloud-aiplatform` installed (already in pyproject.toml)  
+
+**Check prerequisites:**
+```bash
+# Verify authentication
+gcloud auth list
+
+# Check Vertex AI API is enabled
+gcloud services list --enabled --filter="name:aiplatform.googleapis.com"
+
+# Test MLflow connection
+curl -I https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+```
+
+### Deployment Process
+
+1. **Model Discovery**: Script reads from MLflow registry
+2. **Endpoint Creation**: Creates/reuses Vertex AI endpoints  
+3. **Basic Setup**: Prepares endpoint for model serving
+4. **Status Reporting**: Logs deployment results
+
+### Example Usage Scenarios
+
+**After training pipeline completes:**
+```bash
+# Quick deployment of all models
+python deploy_models.py --deploy-all
+```
+
+**Deploy specific book model:**
+```bash
+# Deploy The Alchemist model
+python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name book-sales-alchemist
+
+# Deploy Very Hungry Caterpillar model  
+python deploy_models.py --model-name arima_book_9780241003008 --endpoint-name book-sales-caterpillar
+```
+
+### Monitoring & Management
+
+**Check deployment status:**
+```bash
+# List all current endpoints
+python deploy_models.py --list-endpoints
+
+# View in Google Cloud Console
+open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
+```
+
+**Endpoint naming convention:**
+- Individual book models: `book-sales-{isbn}`
+- Custom endpoints: Use `--endpoint-name` parameter
+
+### Current Limitations & Next Steps
+
+**Current Implementation:**
+- ✅ Endpoint creation and management
+- ✅ Model registry integration  
+- ✅ Basic deployment workflow
+- ⚠️ Simplified model serving (requires container setup for full deployment)
+
+**Production Enhancements (Post-Refactor):**
+- Custom prediction containers for MLflow models
+- Traffic splitting for A/B testing
+- Auto-scaling configuration
+- Health checks and monitoring
+- Cost optimization settings
+
+### Design Rationale
+
+This endpoint deployment approach uses a **simple, standalone script** rather than integrated ZenML steps. This design choice supports an upcoming large-scale refactor project where:
+
+- The main `pipelines/zenml_pipeline.py` will be broken down into proper step files
+- MLOps improvements like parallel processing and A/B testing will be added  
+- The pipeline architecture will undergo significant restructuring
+
+**Benefits of this approach:**
+- **Refactor-friendly**: Won't interfere with pipeline restructuring
+- **Standalone**: Can be run independently of ZenML pipeline
+- **Simple**: Easy to understand and modify during refactor
+- **Extensible**: Can be enhanced with advanced features later
+
+By keeping endpoint deployment separate, we avoid coupling with the current pipeline structure and ensure this functionality can be easily enhanced or integrated once the new architecture is in place.
+
+### Troubleshooting
+
+**Authentication Issues:**
+```bash
+# Re-authenticate if needed
+gcloud auth login
+gcloud auth application-default login
+```
+
+**Permission Issues:**
+```bash
+# Verify Vertex AI permissions
+gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
+    --member="user:$(gcloud config get-value account)" \
+    --role="roles/aiplatform.user"
+```
+
+**Model Not Found:**
+```bash
+# Check models exist in MLflow
+python deploy_models.py --list-models
+
+# Verify MLflow server is accessible
+curl https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+```
+
 ---
 
-*Last updated: August 2025 - After successful MLOps pipeline deployment with remote MLflow integration*
+*Last updated: August 2025 - After successful MLOps pipeline deployment with remote MLflow integration and endpoint deployment capability*

@@ -573,17 +573,7 @@ def train_models_from_consolidated_data(
 
                 logger.info(f"✅ Saved MLflow model to: {model_path}")
 
-                # Register model in MLflow Model Registry for production deployment
-                try:
-                    model_name = f"arima_book_{book_isbn}"
-                    registered_model = mlflow.register_model(
-                        model_uri=f"file://{os.path.abspath(model_path)}",
-                        name=model_name
-                    )
-                    logger.info(f"📝 Registered model '{model_name}' version {registered_model.version} in MLflow Model Registry")
-                except Exception as registry_error:
-                    logger.warning(f"⚠️ Model registry failed (model still saved): {registry_error}")
-                    logger.info(f"📁 Model available at filesystem path: {model_path}")
+                logger.info(f"💾 Model saved and ready for MLflow registration via run-based approach")
 
                 # Clean up old models to prevent disk space issues
                 cleanup_old_mlflow_models(max_models_per_book=2)
@@ -1298,25 +1288,19 @@ def train_individual_arima_models_step(
         if hasattr(train_models_from_consolidated_data, '_book_run_data'):
             logger.info(f"🔄 Creating {len(train_models_from_consolidated_data._book_run_data)} individual book runs...")
 
-            # End the current ZenML MLflow run to avoid conflicts
-            try:
-                mlflow.end_run()
-                logger.info("✅ Ended ZenML MLflow run before creating individual runs")
-            except Exception as e:
-                logger.warning(f"⚠️ Could not end current MLflow run: {e}")
+            # Keep parent run active for proper nested run creation
+            logger.info("🔗 Creating nested runs under parent pipeline run")
 
-            # Set experiment for child runs (individual book models)
-            child_experiment_name = "book_sales_arima_models"
-            mlflow.set_experiment(child_experiment_name)
-            logger.info(f"📊 Switched to child experiment: {child_experiment_name}")
+            # Keep same experiment for nested runs to maintain parent-child relationship
+            logger.info(f"📊 Using same experiment for nested runs to maintain hierarchy")
 
             for book_data in train_models_from_consolidated_data._book_run_data:
                 try:
                     clean_title = book_data['book_title'].replace(' ', '_').replace(',', '').replace("'", '').replace('.', '')
                     book_run_name = f"book_{book_data['book_isbn']}_{clean_title[:15]}"
 
-                    # Create individual run outside ZenML context (sequential, not nested)
-                    with mlflow.start_run(run_name=book_run_name) as book_run:
+                    # Create individual nested run under parent pipeline run
+                    with mlflow.start_run(run_name=book_run_name, nested=True) as book_run:
                         logger.info(f"📖 Created individual run for {book_data['book_isbn']}: {book_run.info.run_id}")
 
                         try:
@@ -1415,28 +1399,12 @@ def train_individual_arima_models_step(
                                 try:
                                     saved_model = mlflow.statsmodels.load_model(model_path)
 
-                                    # Create proper input example for time series model
-                                    input_example = pd.DataFrame({
-                                        'start': [test_data.index[0] if not test_data.empty else pd.Timestamp.now()],
-                                        'end': [test_data.index[-1] if not test_data.empty else pd.Timestamp.now()]
-                                    })
-
-                                    # Log the model to this run with proper input example
-                                    try:
-                                        logged_model = mlflow.statsmodels.log_model(
-                                            statsmodels_model=saved_model,
-                                            artifact_path="model",
-                                            input_example=input_example,
-                                            signature=mlflow.models.infer_signature(input_example)
-                                        )
-                                    except Exception as signature_error:
-                                        # Fallback without signature if inference fails
-                                        logger.warning(f"Could not infer model signature: {signature_error}")
-                                        logged_model = mlflow.statsmodels.log_model(
-                                            statsmodels_model=saved_model,
-                                            artifact_path="model",
-                                            input_example=input_example
-                                        )
+                                    # Log the model to this run without problematic input examples
+                                    # Time series models work better without custom input examples
+                                    logged_model = mlflow.statsmodels.log_model(
+                                        statsmodels_model=saved_model,
+                                        artifact_path="model"
+                                    )
 
                                     # Use the run-based URI for registration (this creates the proper link)
                                     model_uri = f"runs:/{mlflow.active_run().info.run_id}/model"
@@ -1551,7 +1519,7 @@ def train_individual_arima_models_step(
 
         return error_results
 
-# Docker settings - let's go back to manual requirements for now
+# Docker settings - updated for import fix rebuild 
 docker_settings = DockerSettings(
     requirements=[
         "pandas>=2.0.0",
@@ -1566,7 +1534,8 @@ docker_settings = DockerSettings(
         "scipy>=1.10.0",
         "scikit-learn>=1.3.0",
         "statsmodels>=0.14.0",
-        "click<8.1.8"  # Fix ZenML click dependency conflict
+        "click<8.1.8",  # Fix ZenML click dependency conflict
+        "setuptools>=65.1.0"  # Force rebuild with error handling fixes
     ],
     parent_image="zenmldocker/zenml:0.84.2-py3.10"
 )
