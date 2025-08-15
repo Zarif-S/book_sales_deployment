@@ -600,10 +600,9 @@ def train_models_from_consolidated_data(
                 import mlflow.models.signature as signature
                 from mlflow.types.schema import Schema, ColSpec
 
-                # Create input/output signature for SARIMA model
-                input_schema = Schema([ColSpec("double", "steps")])
-                output_schema = Schema([ColSpec("double", "forecast")])
-                model_signature = signature.ModelSignature(inputs=input_schema, outputs=output_schema)
+                # Disable signature for SARIMA models to avoid prediction validation issues
+                # SARIMA models have specific prediction interfaces that don't match generic schemas
+                model_signature = None
 
                 # Save additional context for model loading
                 model_info = {
@@ -615,19 +614,16 @@ def train_models_from_consolidated_data(
                     "training_data_length": len(train_series)
                 }
 
-                # Create proper input example for time series model
-                # MLflow TimeSeriesModel requires 'start' and 'end' columns
-                input_example = pd.DataFrame({
-                    "start": [str(test_series.index[0])],
-                    "end": [str(test_series.index[-1])]
-                })
-
-                # Save with MLflow
+                # For SARIMA models, input_example causes issues with predict method
+                # because it tries to use dates that don't exist in training data index
+                # Removing input_example to avoid KeyError during model validation
+                
+                # Save with MLflow (without input_example to avoid prediction errors)
                 mlflow.statsmodels.save_model(
                     statsmodels_model=final_model,
                     path=model_path,
                     signature=model_signature,
-                    input_example=input_example,
+                    input_example=None,  # Disabled to prevent predict errors
                     metadata=model_info
                 )
 
@@ -1588,13 +1584,14 @@ def train_individual_arima_models_step(
 
         return error_results
 
-# Docker settings - updated for import fix rebuild
+# Docker settings - optimized for Vertex AI and local execution
 docker_settings = DockerSettings(
     requirements=[
         "pandas>=2.0.0",
         "numpy>=1.24.0",
         "gcsfs>=2024.2.0",
         "google-cloud-storage>=2.10.0",
+        "google-cloud-aiplatform>=1.25.0",  # For Vertex AI integration
         "gdown>=5.2.0",
         "openpyxl>=3.1.2",
         "pmdarima>=2.0.4",
@@ -1605,10 +1602,29 @@ docker_settings = DockerSettings(
         "statsmodels>=0.14.0",
         "click>=8.0.0,<8.1.8",  # Fix ZenML click dependency conflict
         "setuptools>=65.2.0",  # Force rebuild with MLflow fixes
-        "requests>=2.25.0"  # For MLflow health checks
+        "requests>=2.25.0",  # For MLflow health checks
+        "zenml[server]>=0.84.0"  # Ensure ZenML server components
     ],
-    parent_image="zenmldocker/zenml:0.84.2-py3.10"
+    parent_image="zenmldocker/zenml:0.84.2-py3.10",
+    # Environment variables for Vertex AI execution
+    environment={
+        "GOOGLE_CLOUD_PROJECT": "upheld-apricot-468313-e0",
+        "GOOGLE_CLOUD_REGION": "europe-west2"
+    }
 )
+
+# Get current orchestrator type for environment detection
+def _get_orchestrator_type() -> str:
+    """Detect if running on Vertex AI or locally."""
+    try:
+        from zenml.client import Client
+        client = Client()
+        orchestrator = client.active_stack.orchestrator
+        if orchestrator and "vertex" in orchestrator.flavor.lower():
+            return "vertex_ai"
+        return "local"
+    except Exception:
+        return "local"
 
 # ------------------ PIPELINE ------------------ #
 
@@ -1629,8 +1645,11 @@ def book_sales_arima_modeling_pipeline(
     """
     Complete book sales ARIMA modeling pipeline with Vertex AI deployment support and smart optimization.
 
-    This pipeline:
-    1. Loads ISBN and UK weekly sales data
+    This pipeline runs on both local and Vertex AI orchestrators with automatic environment detection.
+    It integrates seamlessly with remote MLflow tracking and Google Cloud Storage.
+
+    Pipeline Steps:
+    1. Loads ISBN and UK weekly sales data from GCS
     2. Preprocesses and merges the data
     3. Analyzes data quality
     4. Saves processed data
@@ -1639,17 +1658,27 @@ def book_sales_arima_modeling_pipeline(
     7. Trains individual SARIMA models with smart retraining logic
     8. Logs all experiments and models to MLflow for tracking
 
-    Enhanced Features (v2):
+    Enhanced Features (v3 - Vertex AI Ready):
+    - **Vertex AI orchestrator support** with automatic detection
+    - **Containerized execution** with optimized Docker settings
+    - **GCS integration** for data storage and artifact management
     - Smart model reuse to avoid unnecessary retraining
     - Configuration-driven optimization (development/testing/production modes)
     - Performance-based retraining triggers
     - Environment-specific parameter tuning
     - Consolidated artifacts enable efficient book filtering: train_data[train_data['ISBN'] == book_isbn]
     - Individual SARIMA models per book (scalable to 5+ books)
-    - Vertex AI ready with ZenML artifact caching
-    - MLflow experiment tracking with hyperparameter optimization
+    - Remote MLflow tracking with parent-child run hierarchy
+    - MLflow model registry integration for production deployment
+
+    Deployment Modes:
+    - **Local execution**: Use default orchestrator for development/testing
+    - **Vertex AI execution**: Use Vertex AI orchestrator for production pipelines
+    - **Hybrid deployment**: Local control, remote execution and tracking
     """
-    logger.info("Running book sales ARIMA modeling pipeline")
+    # Detect execution environment
+    orchestrator_type = _get_orchestrator_type()
+    logger.info(f"🚀 Running book sales ARIMA modeling pipeline on {orchestrator_type} orchestrator")
 
     # Load raw data
     df_isbns = load_isbn_data_step()
