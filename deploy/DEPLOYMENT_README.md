@@ -1,67 +1,351 @@
 # MLOps Deployment Guide - Book Sales ARIMA Pipeline
 
-This guide contains step-by-step instructions for deploying the complete MLOps pipeline with ZenML, Vertex AI, and MLflow using GCS bucket data storage.
+This guide contains step-by-step instructions for deploying the hybrid MLOps pipeline with local ZenML orchestration, cloud storage, and remote tracking.
 
 ## 🏗️ Architecture Overview
 
-### Production MLOps Stack
+### Production MLOps Stack (As Implemented)
 
-| Component | Technology | Purpose | URL |
-|-----------|------------|---------|-----|
-| **Pipeline Orchestration** | ZenML | ML pipeline management & artifact lineage | https://zenml-server-1076639696283.europe-west2.run.app |
-| **Cloud Execution** | Google Vertex AI Pipelines | Serverless, scalable pipeline execution | GCP Console |
-| **Experiment Tracking** | MLflow (Cloud Run) | Model versioning & metrics tracking | https://mlflow-tracking-server-1076639696283.europe-west2.run.app |
-| **Data Storage** | Google Cloud Storage | Raw data & artifact storage | `gs://book-sales-deployment-artifacts` |
+| Component | Technology | Purpose | URL/Location |
+|-----------|------------|---------|--------------|
+| **Pipeline Orchestration** | ZenML (Local) | Local pipeline execution & artifact tracking | http://127.0.0.1:8237 |
+| **Artifact Storage** | Google Cloud Storage | Raw data & pipeline artifacts | `gs://book-sales-deployment-artifacts` |
+| **Experiment Tracking** | MLflow (Remote) | Model versioning & metrics tracking | https://mlflow-tracking-server-1076639696283.europe-west2.run.app |
 | **Container Registry** | Google Artifact Registry | Docker image management | `europe-west2-docker.pkg.dev/upheld-apricot-468313-e0/zenml-book-sales-artifacts` |
+| **Model Deployment** | Vertex AI Endpoints | Production model serving | GCP Console |
 
-### Framework Responsibilities
+### Framework Responsibilities (Actual)
 
-**ZenML:**
-- Pipeline step orchestration and caching decisions
+**ZenML (Local):**
+- Pipeline orchestration on local machine
 - Artifact lineage and data provenance tracking
-- Stack management (orchestrator + storage + registry)
-- Local development framework
-
-**Vertex AI Pipelines:**
-- Managed infrastructure and auto-scaling
-- Container orchestration in cloud
-- System-level monitoring and resource allocation
-- Integration with GCP services
-
-**MLflow (Remote):**
-- Centralized experiment tracking across all environments
-- Model registry with versioning (e.g., `arima_book_9780241003008 v18`)
-- Performance metrics storage (MAE, RMSE, MAPE)
-- Model artifact management and deployment staging
+- Local development with cloud integration
+- Dashboard at http://127.0.0.1:8237
 
 **Google Cloud Storage:**
 - Raw CSV data: `gs://book-sales-deployment-artifacts/raw_data/`
 - Pipeline artifacts: Intermediate data between steps
 - MLflow backend: Model binaries and metadata
-- Artifact versioning: Historical model archives
 
-### Production Workflow
+**MLflow (Remote):**
+- Centralized experiment tracking
+- Model registry with versioning (e.g., `arima_book_9780241003008`)
+- Performance metrics storage (MAE, RMSE, MAPE)
+- Accessible at: https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+
+**Vertex AI (Deployment Only):**
+- Model endpoint creation and management
+- Production model serving infrastructure
+
+### Actual Workflow
 ```
-Local Development → ZenML Server → Vertex AI → MLflow Dashboard
-       ↓                ↓              ↓            ↓
-   Pipeline Code    Orchestration   Execution    Results
+Local ZenML → Local Orchestrator → GCS Storage → Remote MLflow → Vertex AI Endpoints
+     ↓              ↓               ↓              ↓                    ↓
+ Local Dev      Fast Execution   Cloud Storage   Remote Tracking   Cloud Serving
 ```
 
-## 🎯 Quick Start (If Everything is Already Set Up)
+## 🚀 Quick Start (Current Working Setup)
 
 ```bash
-# 1. Authenticate with ZenML (7-day token)
-zenml login https://zenml-server-1076639696283.europe-west2.run.app
+# 1. Ensure local ZenML server is running
+export OBJC_DISABLE_INITIALIZE_FORK_SAFETY=YES
+poetry run zenml login --local
 
-# 2. Set the Vertex AI stack
-zenml stack set vertex_stack
+# 2. Set the local hybrid stack
+poetry run zenml stack set local_vertex_test
 
-# 3. Verify data exists in GCS
-gsutil ls gs://book-sales-deployment-artifacts/raw_data/
+# 3. Verify current configuration
+poetry run zenml status
 
 # 4. Run the pipeline
-python pipelines/zenml_pipeline.py
+poetry run python pipelines/zenml_pipeline.py
 ```
+
+## 📋 Prerequisites (Simplified)
+
+- Google Cloud CLI authenticated (`gcloud auth login`)
+- Python 3.10+ with Poetry environment
+- ZenML installed locally
+- Access to GCS bucket and MLflow server
+
+## 🔧 Stack Configuration (As Working)
+
+### Current Active Stack: `local_vertex_test`
+
+```bash
+# View current stack
+poetry run zenml stack describe local_vertex_test
+
+# Components:
+# - Orchestrator: default (local)
+# - Artifact Store: gcs_store (cloud)
+# - Container Registry: gcr_registry (cloud)
+```
+
+### Stack Components Setup
+
+```bash
+# GCS artifact store (already configured)
+poetry run zenml artifact-store describe gcs_store
+
+# Container registry (already configured)  
+poetry run zenml container-registry describe gcr_registry
+
+# Local orchestrator (default, no setup needed)
+poetry run zenml orchestrator describe default
+```
+
+## ✅ Verification Commands (Current Setup)
+
+```bash
+# Check ZenML local connection
+poetry run zenml status
+
+# Check current stack
+poetry run zenml stack describe local_vertex_test
+
+# Verify GCS access
+gsutil ls gs://book-sales-deployment-artifacts/raw_data/
+
+# Test MLflow server
+curl -I https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+
+# Check if local ZenML dashboard is accessible
+curl -I http://127.0.0.1:8237
+```
+
+## 🎯 Pipeline Execution
+
+### Running the Pipeline
+
+```bash
+# Standard execution (uses current stack automatically)
+poetry run python pipelines/zenml_pipeline.py
+
+# With custom configuration
+poetry run python -c "
+from pipelines.zenml_pipeline import book_sales_arima_modeling_pipeline
+from config.arima_training_config import get_arima_config, DEFAULT_TEST_ISBNS, DEFAULT_SPLIT_SIZE
+from pathlib import Path
+
+config = get_arima_config(environment='development', n_trials=3, force_retrain=True)
+output_dir = str(Path.cwd() / 'data' / 'processed')
+
+pipeline_run = book_sales_arima_modeling_pipeline(
+    output_dir=output_dir,
+    selected_isbns=DEFAULT_TEST_ISBNS,
+    column_name='Volume',
+    split_size=DEFAULT_SPLIT_SIZE,
+    use_seasonality_filter=False,
+    max_seasonal_books=15,
+    train_arima=True,
+    n_trials=3,
+    config=config,
+    pipeline_timestamp='local_run',
+    use_local_mlflow=False
+)
+"
+```
+
+## 🚀 Quick Start - Complete End-to-End Deployment
+
+### Option 1: Full Pipeline (Train → Upload → Deploy)
+```bash
+# Step 1: Train models and create basic endpoints (if you need new models)
+python deploy/01_train_pipeline_and_create_endpoints.py --run-pipeline --deploy-all
+
+# Step 2: Upload models to GCS in proper format
+python deploy/02_upload_models_to_gcs.py --upload-all
+
+# Step 3: Deploy models with full containerization
+python deploy/03_deploy_to_vertex_endpoints.py --deploy-all
+
+# Step 4: Test everything works
+python deploy/03_deploy_to_vertex_endpoints.py --test-endpoint book-sales-9780722532935
+cd streamlit_app && streamlit run app.py
+```
+
+### Option 2: Deploy Existing Models (Upload → Deploy)
+```bash
+# If you already have trained models in MLflow:
+
+# Step 1: Upload existing models to GCS
+python deploy/02_upload_models_to_gcs.py --upload-all
+
+# Step 2: Deploy with containerization
+python deploy/03_deploy_to_vertex_endpoints.py --deploy-all
+
+# Step 3: Test
+python deploy/03_deploy_to_vertex_endpoints.py --test-endpoint book-sales-9780722532935
+cd streamlit_app && streamlit run app.py
+```
+
+### File Structure (Updated)
+```
+deploy/
+├── 01_train_pipeline_and_create_endpoints.py  # Train models + create basic endpoints
+├── 02_upload_models_to_gcs.py                 # Upload MLflow models to GCS
+├── 03_deploy_to_vertex_endpoints.py           # Deploy with containerization
+├── container/
+│   └── predictor.py                            # Custom prediction container (alternative)
+└── DEPLOYMENT_README.md                       # This guide
+```
+
+### Script Purpose Summary
+- **01**: Trains models via pipeline + creates empty endpoints (optional if models exist)
+- **02**: Uploads MLflow models to GCS in Vertex AI format (required)
+- **03**: Deploys models using pre-built containers (required for predictions)
+
+## 📊 Model Deployment
+
+### Deploy Models to Vertex AI Endpoints
+
+```bash
+# List available models in MLflow
+poetry run python deploy/01_train_pipeline_and_create_endpoints.py --list-models
+
+# Deploy all models to Vertex AI endpoints (creates endpoints, containerization in progress)
+poetry run python deploy/01_train_pipeline_and_create_endpoints.py --deploy-all
+```
+
+### ✅ Model Containerization with Vertex AI Pre-built Containers
+
+**Current Status**: Complete containerization solution using Vertex AI's pre-built containers:
+- ✅ Creates Vertex AI endpoints
+- ✅ Discovers models from MLflow registry  
+- ✅ Uploads models to Google Cloud Storage
+- ✅ Deploys models using Vertex AI pre-built scikit-learn containers
+- ✅ Full end-to-end model serving capability
+
+**Complete Deployment Process**:
+
+#### Step 1: Upload Models to GCS
+```bash
+# Upload all MLflow models to GCS in Vertex AI-compatible format
+python 02_upload_models_to_gcs.py --upload-all
+
+# List available models in MLflow
+python 02_upload_models_to_gcs.py --list-models
+
+# Check uploaded models in GCS
+python 02_upload_models_to_gcs.py --list-uploaded
+```
+
+**What this does:**
+- Downloads models from MLflow registry
+- Converts to joblib format (compatible with Vertex AI)
+- Creates prediction scripts
+- Uploads to `gs://book-sales-deployment-artifacts/models/`
+
+#### Step 2: Deploy to Vertex AI Endpoints
+```bash
+# Deploy all models to Vertex AI endpoints with full serving
+python 03_deploy_to_vertex_endpoints.py --deploy-all
+
+# Deploy specific model
+python 03_deploy_to_vertex_endpoints.py --model-name arima_book_9780722532935
+
+# Test deployed endpoint
+python 03_deploy_to_vertex_endpoints.py --test-endpoint book-sales-9780722532935
+```
+
+**What this does:**
+- Uses Vertex AI's pre-built scikit-learn container (`sklearn-cpu.1-0:latest`)
+- Creates Vertex AI Model resources from GCS artifacts
+- Deploys models to endpoints with auto-scaling
+- Configures traffic routing and health checks
+
+#### Step 3: Test via Streamlit App
+```bash
+cd streamlit_app
+streamlit run app.py
+# Navigate to "System Status" to check endpoint health
+# Use "Forecast" page for real predictions
+```
+
+**Technical Implementation**:
+
+**GCS Model Structure:**
+```
+gs://book-sales-deployment-artifacts/models/
+├── arima_book_9780722532935/latest/
+│   ├── model.joblib          # Vertex AI compatible model
+│   ├── model.pkl            # Backup pickle format
+│   ├── metadata.json        # Model metadata
+│   └── predictor.py         # Prediction script
+└── arima_book_9780241003008/latest/
+    └── ... (same structure)
+```
+
+**Prediction Format:**
+Your endpoints return structured predictions:
+```json
+{
+  "forecast": [245.2, 267.8, 234.1, 289.3],
+  "steps": 4,
+  "model_name": "arima_book_9780722532935", 
+  "isbn": "9780722532935",
+  "confidence_intervals": {
+    "lower": [230.1, 250.3, 220.5, 270.8],
+    "upper": [260.3, 285.3, 247.7, 307.8],
+    "confidence_level": 0.95
+  }
+}
+```
+
+**Vertex AI Container Configuration:**
+- **Container**: `us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-0:latest`
+- **Machine Type**: `n1-standard-2` (configurable)
+- **Scaling**: 1-2 replicas with auto-scaling
+- **Traffic**: 100% to deployed model
+
+**Key Benefits:**
+- **No Custom Dockerfiles**: Uses Google's optimized containers
+- **Automatic Scaling**: Handles traffic spikes automatically  
+- **Cost Effective**: Pay only for usage
+- **Production Ready**: Full monitoring and logging
+- **Framework Support**: Native statsmodels/MLflow compatibility
+
+## 🔗 Important URLs (Actual)
+
+- **ZenML Dashboard (Local)**: http://127.0.0.1:8237
+- **MLflow Tracking**: https://mlflow-tracking-server-1076639696283.europe-west2.run.app
+- **GCS Bucket**: https://console.cloud.google.com/storage/browser/book-sales-deployment-artifacts
+- **Container Registry**: https://console.cloud.google.com/artifacts/docker/upheld-apricot-468313-e0/europe-west2/zenml-book-sales-artifacts
+
+## 🚀 Architecture Benefits
+
+### Why This Setup Works Well
+
+1. **Cost Effective**: Local orchestration reduces cloud compute costs
+2. **Fast Development**: No container building for local steps
+3. **Cloud Integration**: Still uses cloud storage and tracking
+4. **Deployment Ready**: Models can be deployed to Vertex AI endpoints
+5. **Scalable**: Can be upgraded to full cloud orchestration later
+
+### MLOps Best Practices Maintained
+
+- ✅ **Artifact Storage**: Cloud-based with versioning
+- ✅ **Experiment Tracking**: Centralized in remote MLflow
+- ✅ **Model Registry**: Proper model versioning and metadata
+- ✅ **Deployment Pipeline**: Automated endpoint creation
+- ✅ **Infrastructure as Code**: Stack components defined programmatically
+
+## 🔄 Monitoring & Results
+
+- **Pipeline Runs**: ZenML dashboard at http://127.0.0.1:8237
+- **Experiment Tracking**: MLflow dashboard for metrics and models
+- **Model Artifacts**: Stored in GCS bucket under MLflow paths
+- **Performance Metrics**: MAE, RMSE, MAPE tracked per book
+
+## 🎯 Portfolio Value
+
+This architecture demonstrates:
+- **Hybrid cloud approach**: Local development + cloud services
+- **Cost optimization**: Efficient resource usage
+- **Practical MLOps**: Real-world constraints and solutions
+- **Flexibility**: Easy to scale up or modify
+- **Problem-solving**: Working around authentication challenges
 
 ## 📋 Prerequisites
 
@@ -103,7 +387,7 @@ gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
     --member="serviceAccount:zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com" \
     --role="roles/aiplatform.user"
 
-# Storage permissions  
+# Storage permissions
 gcloud projects add-iam-policy-binding upheld-apricot-468313-e0 \
     --member="serviceAccount:zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com" \
     --role="roles/storage.objectAdmin"
@@ -214,7 +498,7 @@ zenml artifact-store register gcs_store \
     --flavor=gcp \
     --path=gs://book-sales-deployment-artifacts
 
-# Create Vertex AI orchestrator  
+# Create Vertex AI orchestrator
 zenml orchestrator register vertex_orchestrator \
     --flavor=vertex \
     --project=upheld-apricot-468313-e0 \
@@ -242,10 +526,10 @@ zenml stack set vertex_stack
 # Check ZenML connection
 zenml status
 
-# Check ZenML stack configuration  
+# Check ZenML stack configuration
 zenml stack describe vertex_stack
 
-# Verify GCS data exists  
+# Verify GCS data exists
 gsutil ls gs://book-sales-deployment-artifacts/raw_data/
 
 # Test GCS bucket access
@@ -277,7 +561,7 @@ zenml 0.84.2 requires click<8.1.8,>=8.0.1, but you have click 8.1.8 which is inc
 docker_settings = DockerSettings(
     requirements=[
         "pandas>=2.0.0",
-        "numpy>=1.24.0", 
+        "numpy>=1.24.0",
         "gcsfs>=2024.2.0",
         "google-cloud-storage>=2.10.0",
         "gdown>=5.2.0",
@@ -516,7 +800,7 @@ python pipelines/zenml_pipeline.py
 
 ### Vertex AI Production
 ```bash
-zenml stack set vertex_stack  
+zenml stack set vertex_stack
 python pipelines/zenml_pipeline.py
 ```
 
@@ -524,7 +808,7 @@ python pipelines/zenml_pipeline.py
 ```python
 # Edit pipelines/zenml_pipeline.py, modify this section:
 config = get_arima_config(
-    environment='development',  # or 'testing', 'production'  
+    environment='development',  # or 'testing', 'production'
     n_trials=5,                # Number of optimization trials
     force_retrain=True         # Set to False for smart retraining
 )
@@ -533,7 +817,7 @@ config = get_arima_config(
 ## 📈 Monitoring & Results
 
 - **Check runs**: Visit MLflow dashboard for experiment tracking
-- **View logs**: Check ZenML dashboard for pipeline execution logs  
+- **View logs**: Check ZenML dashboard for pipeline execution logs
 - **Model artifacts**: Stored in GCS bucket under `/mlflow/artifacts/`
 - **Performance metrics**: MAE, RMSE, MAPE tracked per book in MLflow
 
@@ -572,7 +856,7 @@ python deploy_models.py --list-models --project-id your-project-id --region your
 
 **Default Configuration:**
 - **Project ID**: `upheld-apricot-468313-e0`
-- **Region**: `europe-west2` 
+- **Region**: `europe-west2`
 - **MLflow URI**: `https://mlflow-tracking-server-1076639696283.europe-west2.run.app`
 
 ### Prerequisites for Endpoint Deployment
@@ -591,9 +875,9 @@ poetry shell
 ```
 
 **Verify you have:**
-✅ **Trained models**: Run your pipeline first to create MLflow models  
-✅ **Authentication**: `gcloud auth login` completed  
-✅ **Project access**: Vertex AI API enabled in your project  
+✅ **Trained models**: Run your pipeline first to create MLflow models
+✅ **Authentication**: `gcloud auth login` completed
+✅ **Project access**: Vertex AI API enabled in your project
 ✅ **Dependencies**: Poetry environment with `mlflow` and `google-cloud-aiplatform` (includes `vertexai`) - already in `pyproject.toml`
 
 **Check prerequisites:**
@@ -622,7 +906,7 @@ The script will detect missing dependencies. Run `poetry install` to ensure all 
 ### Deployment Process
 
 1. **Model Discovery**: Script reads from MLflow registry
-2. **Endpoint Creation**: Creates/reuses Vertex AI endpoints  
+2. **Endpoint Creation**: Creates/reuses Vertex AI endpoints
 3. **Basic Setup**: Prepares endpoint for model serving
 4. **Status Reporting**: Logs deployment results
 
@@ -650,7 +934,7 @@ python deploy_models.py --deploy-all
 # Deploy The Alchemist model to custom endpoint
 python deploy_models.py --model-name arima_book_9780722532935 --endpoint-name book-sales-alchemist
 
-# Deploy Very Hungry Caterpillar model to auto-named endpoint  
+# Deploy Very Hungry Caterpillar model to auto-named endpoint
 python deploy_models.py --model-name arima_book_9780241003008 --endpoint-name book-sales-caterpillar
 
 # Deploy latest version of a model
@@ -682,7 +966,7 @@ open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
 
 **Current Implementation:**
 - ✅ Endpoint creation and management
-- ✅ Model registry integration  
+- ✅ Model registry integration
 - ✅ Basic deployment workflow
 - ✅ Automatic model discovery from MLflow
 - ✅ Batch deployment of all models
@@ -690,7 +974,7 @@ open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
 
 **What the script does:**
 1. ✅ Connects to MLflow registry and discovers book models
-2. ✅ Creates or reuses Vertex AI endpoints  
+2. ✅ Creates or reuses Vertex AI endpoints
 3. ✅ Prepares endpoints for model deployment
 4. ⚠️ Logs that additional containerization is needed for full serving
 
@@ -711,7 +995,7 @@ open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
 This endpoint deployment approach uses a **simple, standalone script** rather than integrated ZenML steps. This design choice supports an upcoming large-scale refactor project where:
 
 - The main `pipelines/zenml_pipeline.py` will be broken down into proper step files
-- MLOps improvements like parallel processing and A/B testing will be added  
+- MLOps improvements like parallel processing and A/B testing will be added
 - The pipeline architecture will undergo significant restructuring
 
 **Benefits of this approach:**
@@ -788,3 +1072,42 @@ python deploy_models.py --list-models --project-id YOUR_PROJECT --region YOUR_RE
 ---
 
 *Last updated: August 2025 - After successful MLOps pipeline deployment with remote MLflow integration and endpoint deployment capability*
+
+
+  - ZenML Dashboard: http://127.0.0.1:8237 (pipeline runs, steps, stacks)
+  - MLflow UI: http://127.0.0.1:5001 (experiment tracking, models)
+
+zenml-pipeline-runner@upheld-apricot-468313-e0.iam.gserviceaccount.com
+
+The email address you see is the unique identifier for that service account. Think of it as the account's official name within all of Google Cloud.
+
+# Switch to your local stack
+zenml stack set default
+
+# Now run your pipeline script as usual
+python your_pipeline_script.py
+
+-----
+
+# Switch to your cloud stack (replace with your stack's name)
+zenml stack set vertex_stack
+
+# Run the EXACT SAME pipeline script
+python your_pipeline_script.py
+
+-- for status:/which stack active and running
+
+zenml stack get
+
+########## When deploying to cloud: ###########
+
+# Activate the cloud stack
+zenml stack set vertex_stack
+
+# Run your pipeline script
+python your_pipeline_script.py
+
+#### Batch Feeding & Dynamic Data Prep with Smart Retraining Plan https://chatgpt.com/share/68951be4-a4a4-8006-ab5e-c07cbfa9ff08 #####
+
+## useful commands
+python3 pipelines/zenml_pipeline.py && python3 scripts/arima_forecast_load_artefacts.py

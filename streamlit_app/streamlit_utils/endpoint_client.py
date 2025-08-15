@@ -131,38 +131,75 @@ class VertexAIEndpointClient:
         if not endpoint:
             return {
                 "error": f"Endpoint {endpoint_name} not found or not deployed",
-                "suggestion": "Run the deployment script first: python deploy_models.py --deploy-all"
+                "suggestion": "Deploy models first: python 02_upload_models_to_gcs.py --upload-all && python 03_deploy_to_vertex_endpoints.py --deploy-all"
+            }
+        
+        # Check if models are deployed to this endpoint
+        deployed_models = endpoint.list_models()
+        if not deployed_models:
+            return {
+                "error": f"No models deployed to endpoint {endpoint_name}",
+                "suggestion": "Deploy models to endpoint: python 03_deploy_to_vertex_endpoints.py --deploy-all"
             }
         
         try:
-            # Prepare prediction request
-            # Note: This is a simplified example - actual request format depends on your model's input schema
+            # Prepare prediction request for the deployed ARIMA model
+            # The pre-built container expects instances in this format
             instances = [{
                 "steps": forecast_steps,
-                "target_date": target_date.isoformat()
+                "return_confidence_intervals": False,
+                "confidence_level": 0.95
             }]
+            
+            logger.info(f"Making prediction request to {endpoint_name} with {forecast_steps} steps")
             
             # Make prediction call
             response = endpoint.predict(instances=instances)
             predictions = response.predictions
             
             if predictions and len(predictions) > 0:
-                predicted_value = predictions[0]
+                prediction_result = predictions[0]
                 
-                # Format response
-                return {
-                    "isbn": book_info.get("isbn", "unknown"),
-                    "title": book_info["title"],
-                    "author": book_info["author"],
-                    "target_date": target_date.date().isoformat(),
-                    "forecast_steps": forecast_steps,
-                    "predicted_sales": round(float(predicted_value), 1),
-                    "confidence_level": "Model-based prediction",
-                    "endpoint_used": endpoint_name,
-                    "prediction_type": "real"
-                }
+                # Extract forecast values from the prediction result
+                if isinstance(prediction_result, dict) and "forecast" in prediction_result:
+                    forecast_values = prediction_result["forecast"]
+                    # Take the last forecasted value (the target date prediction)
+                    predicted_value = forecast_values[-1] if forecast_values else 0
+                    
+                    # Format response
+                    return {
+                        "isbn": prediction_result.get("isbn", book_info.get("isbn", "unknown")),
+                        "title": book_info["title"],
+                        "author": book_info["author"],
+                        "target_date": target_date.date().isoformat(),
+                        "forecast_steps": forecast_steps,
+                        "predicted_sales": round(float(predicted_value), 1),
+                        "confidence_level": "ARIMA model prediction",
+                        "endpoint_used": endpoint_name,
+                        "prediction_type": "real",
+                        "full_forecast": forecast_values,
+                        "model_info": {
+                            "model_name": prediction_result.get("model_name", "unknown"),
+                            "forecast_length": len(forecast_values) if forecast_values else 0
+                        }
+                    }
+                else:
+                    # Handle simple numeric prediction
+                    predicted_value = float(prediction_result)
+                    
+                    return {
+                        "isbn": book_info.get("isbn", "unknown"),
+                        "title": book_info["title"],
+                        "author": book_info["author"],
+                        "target_date": target_date.date().isoformat(),
+                        "forecast_steps": forecast_steps,
+                        "predicted_sales": round(predicted_value, 1),
+                        "confidence_level": "ARIMA model prediction",
+                        "endpoint_used": endpoint_name,
+                        "prediction_type": "real"
+                    }
             else:
-                raise ValueError("Empty prediction response")
+                raise ValueError("Empty prediction response from endpoint")
                 
         except Exception as e:
             logger.error(f"Endpoint prediction failed: {e}")
