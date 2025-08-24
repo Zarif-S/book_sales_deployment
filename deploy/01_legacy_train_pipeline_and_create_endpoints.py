@@ -8,14 +8,14 @@ the resulting models to Vertex AI endpoints for serving.
 
 Usage:
     # Run pipeline on Vertex AI and deploy all models
-    python 01_vertex_deployment_and_endpoint.py --run-pipeline --deploy-all
-    
+    python deploy/01_train_pipeline_and_create_endpoints.py --run-pipeline --deploy-all
+
     # Just run pipeline on Vertex AI
     python 01_vertex_deployment_and_endpoint.py --run-pipeline
-    
+
     # Just deploy existing models
     python 01_vertex_deployment_and_endpoint.py --deploy-all
-    
+
     # Run pipeline with custom config
     python 01_vertex_deployment_and_endpoint.py --run-pipeline --environment production --trials 50
 
@@ -82,7 +82,7 @@ class VertexPipelineDeployer:
         try:
             active_stack = self.zenml_client.active_stack
             logger.info(f"Active ZenML stack: {active_stack.name}")
-            
+
             # Check for Vertex AI orchestrator
             orchestrator = active_stack.orchestrator
             if orchestrator and "vertex" in orchestrator.flavor.lower():
@@ -91,28 +91,28 @@ class VertexPipelineDeployer:
             else:
                 logger.warning(f"⚠️  Current orchestrator: {orchestrator.name if orchestrator else 'None'} ({orchestrator.flavor if orchestrator else 'None'})")
                 logger.warning("Expected Vertex AI orchestrator for remote execution")
-                
+
                 # List available stacks with Vertex AI
                 stacks = self.zenml_client.list_stacks()
                 vertex_stacks = []
                 for stack in stacks:
                     if stack.orchestrator and "vertex" in stack.orchestrator.flavor.lower():
                         vertex_stacks.append(stack.name)
-                
+
                 if vertex_stacks:
                     logger.info(f"Available Vertex AI stacks: {vertex_stacks}")
                     logger.info("Switch to a Vertex AI stack with: zenml stack set <stack_name>")
                 else:
                     logger.error("No Vertex AI stacks found!")
                     logger.info("Create one with: zenml stack register <name> -o <vertex_orchestrator>")
-                
+
                 return False
         except Exception as e:
             logger.error(f"Failed to check Vertex AI stack: {e}")
             return False
 
     def run_pipeline_on_vertex(
-        self, 
+        self,
         environment: str = "development",
         n_trials: int = 3,
         force_retrain: bool = True,
@@ -126,29 +126,29 @@ class VertexPipelineDeployer:
                 return None
 
             logger.info("🚀 Starting pipeline execution on Vertex AI...")
-            
+
             # Set up output directory (relative to project root)
             project_root = Path(__file__).parent.parent
             output_dir = str(project_root / 'data' / 'processed')
-            
+
             # Create configuration
             config = get_arima_config(
                 environment=environment,
                 n_trials=n_trials,
                 force_retrain=force_retrain
             )
-            
+
             logger.info(f"🔧 Pipeline configuration:")
             logger.info(f"   Environment: {config.environment}")
             logger.info(f"   Trials: {config.n_trials}")
             logger.info(f"   Force retrain: {config.force_retrain}")
             logger.info(f"   Books: {selected_isbns or DEFAULT_TEST_ISBNS}")
-            
+
             # Create custom pipeline run name
             import datetime
             timestamp = datetime.datetime.now().strftime("%m%d_%H%M")
             num_books = len(selected_isbns or DEFAULT_TEST_ISBNS)
-            
+
             # Get git commit hash for traceability
             try:
                 import subprocess
@@ -157,10 +157,10 @@ class VertexPipelineDeployer:
                 git_hash = result.stdout.strip() if result.returncode == 0 else 'unknown'
             except Exception:
                 git_hash = 'unknown'
-            
+
             pipeline_name = f"vertex_pipeline_{num_books}books_{git_hash}_{timestamp}"
             logger.info(f"🏷️  Pipeline run name: {pipeline_name}")
-            
+
             # Run the pipeline on Vertex AI
             pipeline_run = book_sales_arima_modeling_pipeline.with_options(
                 run_name=pipeline_name
@@ -177,13 +177,13 @@ class VertexPipelineDeployer:
                 pipeline_timestamp=timestamp,
                 use_local_mlflow=False  # Use remote MLflow
             )
-            
+
             logger.info(f"✅ Pipeline submitted to Vertex AI")
             logger.info(f"📊 Pipeline run ID: {pipeline_run.id}")
             logger.info(f"🔗 Monitor progress in ZenML dashboard or GCP Console")
-            
+
             return pipeline_run.id
-            
+
         except Exception as e:
             logger.error(f"Failed to run pipeline on Vertex AI: {e}")
             import traceback
@@ -194,38 +194,38 @@ class VertexPipelineDeployer:
         """Wait for pipeline to complete on Vertex AI."""
         try:
             logger.info(f"⏳ Waiting for pipeline {run_id} to complete (timeout: {timeout_minutes}min)")
-            
+
             start_time = time.time()
             timeout_seconds = timeout_minutes * 60
-            
+
             while True:
                 try:
                     # Get pipeline run status
                     run = self.zenml_client.get_pipeline_run(run_id)
                     status = run.status
-                    
+
                     logger.info(f"📊 Pipeline status: {status}")
-                    
+
                     if status.name in ['COMPLETED']:
                         logger.info(f"✅ Pipeline completed successfully!")
                         return True
                     elif status.name in ['FAILED', 'CANCELLED']:
                         logger.error(f"❌ Pipeline failed with status: {status}")
                         return False
-                    
+
                     # Check timeout
                     if time.time() - start_time > timeout_seconds:
                         logger.warning(f"⏰ Pipeline timeout after {timeout_minutes} minutes")
                         logger.info("Pipeline may still be running. Check ZenML dashboard for status.")
                         return False
-                    
+
                     # Wait before checking again
                     time.sleep(30)  # Check every 30 seconds
-                    
+
                 except Exception as e:
                     logger.warning(f"Failed to get pipeline status: {e}")
                     time.sleep(30)
-                    
+
         except Exception as e:
             logger.error(f"Error waiting for pipeline completion: {e}")
             return False
@@ -235,7 +235,7 @@ class VertexPipelineDeployer:
         try:
             models = []
             logger.info("📋 Checking MLflow registry for available models...")
-            
+
             for model in mlflow.search_registered_models():
                 if model.name.startswith("arima_book_"):
                     latest_version = model.latest_versions[0] if model.latest_versions else None
@@ -245,10 +245,10 @@ class VertexPipelineDeployer:
                         'stage': latest_version.current_stage if latest_version else 'N/A',
                         'isbn': model.name.replace("arima_book_", "")
                     })
-            
+
             logger.info(f"Found {len(models)} ARIMA models in registry")
             return models
-            
+
         except Exception as e:
             logger.error(f"Failed to list models: {e}")
             return []
@@ -317,7 +317,7 @@ class VertexPipelineDeployer:
 
         logger.info(f"🚀 Starting deployment of {len(models)} models to Vertex AI endpoints")
         results = {}
-        
+
         for model in models:
             model_name = model['name']
             isbn = model['isbn']
@@ -333,14 +333,14 @@ class VertexPipelineDeployer:
         # Summary
         success_count = sum(1 for success in results.values() if success)
         logger.info(f"📊 Deployment summary: {success_count}/{len(results)} models deployed")
-        
+
         return results
 
 
 def main():
     """Main function with command line interface."""
     parser = argparse.ArgumentParser(description="Run Vertex AI pipeline and deploy models to endpoints")
-    
+
     # Pipeline execution options
     parser.add_argument("--run-pipeline", action="store_true", help="Run pipeline on Vertex AI")
     parser.add_argument("--environment", default="development", choices=["development", "testing", "production"],
@@ -349,11 +349,11 @@ def main():
     parser.add_argument("--force-retrain", action="store_true", help="Force retraining of all models")
     parser.add_argument("--wait", action="store_true", help="Wait for pipeline completion")
     parser.add_argument("--timeout", type=int, default=60, help="Pipeline timeout in minutes")
-    
+
     # Model deployment options
     parser.add_argument("--deploy-all", action="store_true", help="Deploy all available book models")
     parser.add_argument("--list-models", action="store_true", help="List all available models")
-    
+
     # GCP configuration
     parser.add_argument("--project-id", default="upheld-apricot-468313-e0", help="GCP project ID")
     parser.add_argument("--region", default="europe-west2", help="GCP region")
@@ -383,10 +383,10 @@ def main():
             force_retrain=args.force_retrain,
             selected_isbns=DEFAULT_TEST_ISBNS
         )
-        
+
         if run_id:
             logger.info(f"✅ Pipeline submitted successfully: {run_id}")
-            
+
             # Wait for completion if requested
             if args.wait:
                 success = deployer.wait_for_pipeline_completion(run_id, args.timeout)

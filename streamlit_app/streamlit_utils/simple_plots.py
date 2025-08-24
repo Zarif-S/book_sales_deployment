@@ -36,17 +36,43 @@ def plot_historical_sales(df: pd.DataFrame, isbn: str = None, title: str = None)
     logger.info(f"Creating historical sales plot for ISBN: {isbn}")
     
     # Ensure End Date is datetime and set as index
-    if 'End Date' in df.columns:
-        df = df.copy()
-        df['End Date'] = pd.to_datetime(df['End Date'])
-        df = df.set_index('End Date')
+    df = df.copy()
+    date_column = None
+    
+    # Check for different possible date column names
+    for col in ['End Date', 'End_Date', 'date', 'Date']:
+        if col in df.columns:
+            date_column = col
+            break
+    
+    if date_column:
+        df[date_column] = pd.to_datetime(df[date_column])
+        df = df.set_index(date_column)
+    else:
+        logger.warning(f"No date column found in data. Available columns: {list(df.columns)}")
+        return go.Figure().add_annotation(text="No date column found", x=0.5, y=0.5)
     
     fig = go.Figure()
     
     if isbn:
         # Plot specific book
-        book_data = df[df['ISBN'] == isbn] if 'ISBN' in df.columns else df
+        if 'ISBN' in df.columns:
+            # Check for exact matches and similar matches
+            exact_matches = df[df['ISBN'] == isbn]
+            
+            # Check for string matches (in case of type mismatch)
+            str_matches = df[df['ISBN'].astype(str) == str(isbn)]
+            
+            book_data = exact_matches if not exact_matches.empty else str_matches
+        else:
+            book_data = df
+        
         if not book_data.empty:
+            # Check if Volume column exists
+            if 'Volume' not in book_data.columns:
+                logger.error(f"Volume column not found. Available columns: {list(book_data.columns)}")
+                return go.Figure().add_annotation(text=f"Volume column missing from data", x=0.5, y=0.5)
+            
             # Get book title for display
             book_title = book_data['Title'].iloc[0] if 'Title' in book_data.columns else f"ISBN {isbn}"
             
@@ -58,6 +84,8 @@ def plot_historical_sales(df: pd.DataFrame, isbn: str = None, title: str = None)
                 line=dict(width=2),
                 marker=dict(size=4)
             ))
+        else:
+            return go.Figure().add_annotation(text=f"No data found for ISBN {isbn}", x=0.5, y=0.5)
     else:
         # Plot all books
         if 'ISBN' in df.columns:
@@ -134,9 +162,17 @@ def plot_forecast_with_historical(historical_df: pd.DataFrame, predictions: List
     
     # Prepare historical data
     historical_df = historical_df.copy()
-    if 'End Date' in historical_df.columns:
-        historical_df['End Date'] = pd.to_datetime(historical_df['End Date'])
-        historical_df = historical_df.set_index('End Date')
+    date_column = None
+    
+    # Check for different possible date column names
+    for col in ['End Date', 'End_Date', 'date', 'Date']:
+        if col in historical_df.columns:
+            date_column = col
+            break
+    
+    if date_column:
+        historical_df[date_column] = pd.to_datetime(historical_df[date_column])
+        historical_df = historical_df.set_index(date_column)
     
     # Filter for specific book
     if 'ISBN' in historical_df.columns:

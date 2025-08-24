@@ -213,7 +213,21 @@ mlflow ui
 
 ## ☁️ Production MLOps Architecture
 
-For production deployment with ZenML, Vertex AI, and MLflow, see detailed architecture overview and setup instructions in **`DEPLOYMENT_README.md`**.
+**Current Architecture:** Hybrid orchestration (local) + Cloud storage + Remote MLflow + Vertex AI deployment
+
+### Quick Deployment Workflow
+```bash
+# 1. Train models (local orchestration with cloud storage)
+python pipelines/zenml_pipeline.py
+
+# 2. Upload models to GCS for Vertex AI
+python deploy/02_upload_models_to_gcs.py --upload-all
+
+# 3. Deploy to Vertex AI endpoints
+python deploy/03_deploy_to_vertex_endpoints.py --deploy-all
+```
+
+For detailed setup instructions and architecture overview, see **`deploy/DEPLOYMENT_README.md`** and **`PIPELINE_README.md`**.
 
 ## 🔧 Development
 

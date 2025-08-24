@@ -266,7 +266,7 @@ class VertexAIEndpointClient:
     def health_check(self) -> Dict[str, Any]:
         """Check client health and available endpoints."""
         status = {
-            "vertex_ai_available": self.vertex_available,
+            "vertex_ai_available": False,  # Default to False, will update based on actual checks
             "project_id": self.project_id,
             "region": self.region,
             "available_books": len(self.book_metadata),
@@ -279,19 +279,43 @@ class VertexAIEndpointClient:
                 endpoints = aiplatform.Endpoint.list()
                 status["total_endpoints"] = len(endpoints)
                 status["book_endpoints_found"] = []
+                deployed_count = 0
                 
                 for book_isbn, book_info in self.book_metadata.items():
                     endpoint_name = book_info["endpoint_name"]
-                    found = any(ep.display_name == endpoint_name for ep in endpoints)
+                    found_endpoint = None
+                    for ep in endpoints:
+                        if ep.display_name == endpoint_name:
+                            found_endpoint = ep
+                            break
+                    
+                    deployed = found_endpoint is not None
+                    if deployed:
+                        # Check if endpoint has deployed models
+                        try:
+                            deployed_models = found_endpoint.list_models()
+                            has_models = len(deployed_models) > 0
+                            if has_models:
+                                deployed_count += 1
+                        except:
+                            has_models = False
+                    else:
+                        has_models = False
+                    
                     status["book_endpoints_found"].append({
                         "isbn": book_isbn,
                         "title": book_info["title"],
                         "endpoint": endpoint_name,
-                        "deployed": found
+                        "deployed": deployed and has_models
                     })
+                
+                # Only mark as available if we have actual deployed models
+                status["vertex_ai_available"] = deployed_count > 0
+                status["deployed_models_count"] = deployed_count
                     
             except Exception as e:
                 status["endpoint_check_error"] = str(e)
+                status["vertex_ai_available"] = False
         
         return status
 

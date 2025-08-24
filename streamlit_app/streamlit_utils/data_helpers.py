@@ -102,6 +102,8 @@ class DataLoader:
                 logger.info(f"Loaded training data: {len(train_df)} rows")
             except Exception as e:
                 logger.error(f"Error loading training data for {isbn}: {e}")
+        else:
+            logger.warning(f"Training file not found: {train_file}")
         
         # Load test data if available
         if test_file.exists():

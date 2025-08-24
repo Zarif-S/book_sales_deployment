@@ -172,20 +172,20 @@ def cleanup_old_mlflow_models(max_models_per_book: int = 2) -> None:
         # Also find models directly in the project outputs directory
         outputs_dir = "outputs/models/arima"
         outputs_models_by_book = {}
-        
+
         if os.path.exists(outputs_dir):
             logger.info(f"📂 Checking outputs directory: {outputs_dir}")
-            
+
             for book_dir in os.listdir(outputs_dir):
                 if book_dir.startswith("book_") and os.path.isdir(os.path.join(outputs_dir, book_dir)):
                     # Extract ISBN from directory name
                     book_isbn = book_dir.replace("book_", "")
                     if len(book_isbn) == 13 and book_isbn.isdigit():
                         book_path = os.path.join(outputs_dir, book_dir)
-                        
+
                         if book_isbn not in outputs_models_by_book:
                             outputs_models_by_book[book_isbn] = []
-                        
+
                         # Find all model directories for this book
                         for item in os.listdir(book_path):
                             item_path = os.path.join(book_path, item)
@@ -617,7 +617,7 @@ def train_models_from_consolidated_data(
                 # For SARIMA models, input_example causes issues with predict method
                 # because it tries to use dates that don't exist in training data index
                 # Removing input_example to avoid KeyError during model validation
-                
+
                 # Save with MLflow (without input_example to avoid prediction errors)
                 mlflow.statsmodels.save_model(
                     statsmodels_model=final_model,
@@ -1192,7 +1192,7 @@ def parse_quality_report_step(quality_report_json: str) -> Dict:
     return json.loads(quality_report_json)
 
 @step(
-    enable_cache=False,  # Disable cache to see fresh training run
+    enable_cache=True,  # Disable cache to see fresh training run
     enable_artifact_metadata=True,
     enable_artifact_visualization=True,
 )
@@ -1225,7 +1225,7 @@ def train_individual_arima_models_step(
         default_remote_uri = "https://mlflow-tracking-server-1076639696283.europe-west2.run.app"
         mlflow_tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", default_remote_uri)
         logger.info("☁️  Using remote MLflow server")
-    
+
     mlflow.set_tracking_uri(mlflow_tracking_uri)
 
     # Set MLflow experiment name for parent pipeline runs

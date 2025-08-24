@@ -192,13 +192,45 @@ def show_forecast_page():
         
         max_date = date.today() + timedelta(days=365)  # 1 year ahead
         
-        target_date = st.date_input(
-            "🗓️ Target Prediction Date:",
-            value=min_date + timedelta(days=30),  # Default to 1 month ahead
-            min_value=min_date,
-            max_value=max_date,
-            help="Select a future date to predict sales for"
+        # Choice between single date and date range
+        prediction_type = st.radio(
+            "📊 Prediction Type:",
+            ["Single Date", "Date Range"],
+            help="Choose whether to predict for a single date or a range of dates"
         )
+        
+        if prediction_type == "Single Date":
+            target_date = st.date_input(
+                "🗓️ Target Prediction Date:",
+                value=min_date + timedelta(days=30),  # Default to 1 month ahead
+                min_value=min_date,
+                max_value=max_date,
+                help="Select a future date to predict sales for"
+            )
+            end_date = None
+        else:
+            col_date1, col_date2 = st.columns(2)
+            with col_date1:
+                target_date = st.date_input(
+                    "🗓️ Start Date:",
+                    value=min_date + timedelta(days=30),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Select the start date for predictions"
+                )
+            with col_date2:
+                end_date = st.date_input(
+                    "🏁 End Date:",
+                    value=min_date + timedelta(days=60),
+                    min_value=min_date,
+                    max_value=max_date,
+                    help="Select the end date for predictions"
+                )
+            
+            # Validate date range
+            if end_date and target_date and end_date <= target_date:
+                st.error("End date must be after start date")
+                end_date = None
         
         # Prediction button
         st.markdown("---")
@@ -228,76 +260,169 @@ def show_forecast_page():
                 else:
                     weeks_ahead = max(1, int((target_datetime - datetime.now()).days / 7))
                 
-                st.info(f"""
-                **Prediction Details:**
-                - Target Date: {target_date}
-                - Weeks Ahead: {weeks_ahead}
-                - Forecast Horizon: ~{weeks_ahead/4:.1f} months
-                """)
+                if prediction_type == "Single Date":
+                    st.info(f"""
+                    **Prediction Details:**
+                    - Target Date: {target_date}
+                    - Weeks Ahead: {weeks_ahead}
+                    - Forecast Horizon: ~{weeks_ahead/4:.1f} months
+                    """)
+                else:
+                    if end_date:
+                        end_datetime = datetime.combine(end_date, datetime.min.time())
+                        if latest_date:
+                            weeks_end = max(1, int((end_datetime - latest_date).days / 7))
+                        else:
+                            weeks_end = max(1, int((end_datetime - datetime.now()).days / 7))
+                        
+                        days_span = (end_date - target_date).days
+                        st.info(f"""
+                        **Date Range Prediction Details:**
+                        - Start Date: {target_date} ({weeks_ahead} weeks ahead)
+                        - End Date: {end_date} ({weeks_end} weeks ahead)  
+                        - Date Span: {days_span} days (~{days_span/7:.1f} weeks)
+                        """)
                 
             except Exception as e:
                 st.warning(f"Could not calculate forecast details: {e}")
     
     # Handle prediction
-    if predict_button:
-        with st.spinner("🔄 Generating prediction..."):
-            try:
-                # Get prediction
-                target_datetime = datetime.combine(target_date, datetime.min.time())
-                prediction = st.session_state.client.get_prediction(selected_isbn, target_datetime)
-                
-                # Store in history
-                st.session_state.predictions_history.append({
-                    'timestamp': datetime.now(),
-                    'prediction': prediction
-                })
-                
-                # Display results
-                st.markdown("---")
-                st.subheader("🎯 Prediction Results")
-                
-                col1, col2 = st.columns([2, 1])
-                
-                with col1:
-                    # Show prediction details
-                    if 'error' not in prediction:
-                        st.success("✅ Prediction generated successfully!")
+    if predict_button and target_date:
+        # Validate date range if selected
+        if prediction_type == "Date Range" and (not end_date or end_date <= target_date):
+            st.error("Please select a valid date range (end date must be after start date)")
+        else:
+            with st.spinner("🔄 Generating prediction..."):
+                try:
+                    if prediction_type == "Single Date":
+                        # Single date prediction
+                        target_datetime = datetime.combine(target_date, datetime.min.time())
+                        prediction = st.session_state.client.get_prediction(selected_isbn, target_datetime)
                         
-                        # Format prediction text
-                        prediction_text = format_prediction_text(prediction)
-                        st.markdown(prediction_text)
+                        # Store in history
+                        st.session_state.predictions_history.append({
+                            'timestamp': datetime.now(),
+                            'prediction': prediction
+                        })
                         
-                        # Show prediction chart
-                        fig = plot_single_prediction(prediction)
-                        st.plotly_chart(fig, use_container_width=True)
-                        
+                        predictions = [prediction]  # Wrap in list for consistent handling
+                    
                     else:
-                        st.error(f"❌ Prediction failed: {prediction['error']}")
-                        if 'suggestion' in prediction:
-                            st.info(f"💡 {prediction['suggestion']}")
-                
-                with col2:
-                    # Additional info
-                    if 'error' not in prediction:
-                        pred_type = prediction.get('prediction_type', 'unknown')
-                        if pred_type == 'mock':
-                            st.warning("""
-                            ⚠️ **Development Mode**
-                            
-                            This is a mock prediction for testing. 
-                            Deploy your models to get real predictions.
-                            """)
+                        # Date range prediction
+                        predictions = []
+                        current_date = target_date
+                        
+                        # Generate predictions for weekly intervals
+                        while current_date <= end_date:
+                            target_datetime = datetime.combine(current_date, datetime.min.time())
+                            prediction = st.session_state.client.get_prediction(selected_isbn, target_datetime)
+                            prediction['date_in_range'] = current_date.isoformat()
+                            predictions.append(prediction)
+                            current_date += timedelta(weeks=1)  # Weekly predictions
+                        
+                        # Store range in history
+                        st.session_state.predictions_history.append({
+                            'timestamp': datetime.now(),
+                            'prediction': {
+                                'type': 'date_range',
+                                'start_date': target_date.isoformat(),
+                                'end_date': end_date.isoformat(),
+                                'predictions_count': len(predictions),
+                                'title': selected_book_info['title']
+                            }
+                        })
+                    
+                    # Display results
+                    st.markdown("---")
+                    st.subheader("🎯 Prediction Results")
+                    
+                    col1, col2 = st.columns([2, 1])
+                    
+                    with col1:
+                        # Show prediction details
+                        if prediction_type == "Single Date":
+                            prediction = predictions[0]
+                            if 'error' not in prediction:
+                                st.success("✅ Prediction generated successfully!")
+                                
+                                # Format prediction text
+                                prediction_text = format_prediction_text(prediction)
+                                st.markdown(prediction_text)
+                                
+                                # Show prediction chart
+                                fig = plot_single_prediction(prediction)
+                                st.plotly_chart(fig, use_container_width=True)
+                                
+                            else:
+                                st.error(f"❌ Prediction failed: {prediction['error']}")
+                                if 'suggestion' in prediction:
+                                    st.info(f"💡 {prediction['suggestion']}")
+                        
                         else:
-                            st.success("""
-                            ✨ **Live Prediction**
+                            # Date range predictions
+                            successful_predictions = [p for p in predictions if 'error' not in p]
                             
-                            This prediction comes from your deployed 
-                            machine learning model.
+                            if successful_predictions:
+                                st.success(f"✅ Generated {len(successful_predictions)} predictions!")
+                                
+                                # Create a summary table
+                                prediction_df = pd.DataFrame([{
+                                    'Date': p.get('date_in_range', p.get('target_date', 'Unknown')),
+                                    'Predicted Sales': p.get('predicted_sales', 0),
+                                    'Type': 'Mock' if p.get('prediction_type') == 'mock' else 'Real'
+                                } for p in successful_predictions])
+                                
+                                # Display table
+                                st.subheader("📊 Prediction Summary")
+                                st.dataframe(prediction_df, use_container_width=True)
+                                
+                                # Show chart for range predictions
+                                try:
+                                    import plotly.express as px
+                                    fig = px.line(prediction_df, x='Date', y='Predicted Sales', 
+                                                title=f"Sales Forecast Range - {selected_book_info['title']}")
+                                    fig.update_layout(showlegend=False)
+                                    st.plotly_chart(fig, use_container_width=True)
+                                except:
+                                    st.info("Chart visualization not available")
+                                
+                            else:
+                                st.error("❌ All predictions in range failed")
+                                failed_prediction = predictions[0] if predictions else {}
+                                if 'suggestion' in failed_prediction:
+                                    st.info(f"💡 {failed_prediction['suggestion']}")
+                
+                    with col2:
+                        # Additional info
+                        sample_prediction = predictions[0] if predictions else {}
+                        if 'error' not in sample_prediction and sample_prediction:
+                            pred_type = sample_prediction.get('prediction_type', 'unknown')
+                            if pred_type == 'mock':
+                                st.warning("""
+                                ⚠️ **Development Mode**
+                                
+                                These are mock predictions for testing. 
+                                Deploy your models to get real predictions.
+                                """)
+                            else:
+                                st.success("""
+                                ✨ **Live Prediction**
+                                
+                                These predictions come from your deployed 
+                                machine learning model.
+                                """)
+                        
+                        if prediction_type == "Date Range" and predictions:
+                            st.info(f"""
+                            **Range Summary:**
+                            - Total Predictions: {len(predictions)}
+                            - Date Range: {target_date} to {end_date}
+                            - Frequency: Weekly
                             """)
                 
-            except Exception as e:
-                st.error(f"❌ Error generating prediction: {e}")
-                logger.error(f"Prediction error: {e}")
+                except Exception as e:
+                    st.error(f"❌ Error generating prediction: {e}")
+                    logger.error(f"Prediction error: {e}")
     
     # Show recent predictions history
     if st.session_state.predictions_history:
@@ -340,6 +465,7 @@ def show_historical_page():
             
             selected_isbn = book_options[selected_book_display]
             
+            
         except Exception as e:
             st.error(f"Error loading books: {e}")
             return
@@ -354,6 +480,7 @@ def show_historical_page():
         with st.spinner("📈 Loading historical data..."):
             historical_data = st.session_state.data_loader.load_historical_data(selected_isbn)
             
+            
             if historical_data.empty:
                 st.warning("📭 No historical data available")
                 return
@@ -365,6 +492,7 @@ def show_historical_page():
             plot_data = historical_data.copy()
             if 'End_Date' in plot_data.columns:
                 plot_data['End Date'] = plot_data['End_Date']
+            
             
             fig = plot_historical_sales(
                 plot_data, 

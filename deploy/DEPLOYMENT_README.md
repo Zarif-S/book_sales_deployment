@@ -147,25 +147,27 @@ pipeline_run = book_sales_arima_modeling_pipeline(
 "
 ```
 
-## 🚀 Quick Start - Complete End-to-End Deployment
+## 🚀 Quick Start - Hybrid Deployment Workflow
 
-### Option 1: Full Pipeline (Train → Upload → Deploy)
+**Current Workflow:** Local orchestration with cloud storage + Vertex AI deployment
+
+### Complete End-to-End Deployment (Recommended)
 ```bash
-# Step 1: Train models and create basic endpoints (if you need new models)
-python deploy/01_train_pipeline_and_create_endpoints.py --run-pipeline --deploy-all
+# Step 1: Train models with hybrid stack (local orchestrator + cloud storage)
+python pipelines/zenml_pipeline.py
 
-# Step 2: Upload models to GCS in proper format
+# Step 2: Upload trained models to GCS in Vertex AI format
 python deploy/02_upload_models_to_gcs.py --upload-all
 
-# Step 3: Deploy models with full containerization
+# Step 3: Deploy models to Vertex AI endpoints
 python deploy/03_deploy_to_vertex_endpoints.py --deploy-all
 
-# Step 4: Test everything works
+# Step 4: Test deployed endpoints
 python deploy/03_deploy_to_vertex_endpoints.py --test-endpoint book-sales-9780722532935
 cd streamlit_app && streamlit run app.py
 ```
 
-### Option 2: Deploy Existing Models (Upload → Deploy)
+### Deploy Existing Models (Upload → Deploy)
 ```bash
 # If you already have trained models in MLflow:
 
@@ -179,6 +181,17 @@ python deploy/03_deploy_to_vertex_endpoints.py --deploy-all
 python deploy/03_deploy_to_vertex_endpoints.py --test-endpoint book-sales-9780722532935
 cd streamlit_app && streamlit run app.py
 ```
+
+### ⚠️ Note: deploy/01_train_pipeline_and_create_endpoints.py
+
+**This script is designed for full Vertex AI orchestration** and requires a remote ZenML server (ZenML 0.84.2+ requirement). 
+
+**For your current hybrid setup (local orchestrator + cloud storage), use the workflow above instead.**
+
+**Alternative Options:**
+- **Option A:** Deploy a remote ZenML server to GCP to use this script
+- **Option B:** Modify the script to work with local orchestrator (remove Vertex AI checks)
+- **Option C:** Use the recommended 3-step workflow above (simpler and works perfectly)
 
 ### File Structure (Updated)
 ```
