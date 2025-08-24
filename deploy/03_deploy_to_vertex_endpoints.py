@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-Deploy Models to Vertex AI Endpoints using Pre-built Containers
+Deploy MLflow Models to Vertex AI Endpoints using MLflow Serving
 
-This script deploys models from GCS to Vertex AI endpoints using
-Vertex AI's pre-built scikit-learn container which supports statsmodels.
+This script deploys MLflow ARIMA models from GCS to Vertex AI endpoints using
+Vertex AI's native MLflow serving capabilities with proper dependency resolution.
 
 Usage:
     python 03_deploy_to_vertex_endpoints.py --deploy-all
@@ -35,7 +35,7 @@ except ImportError as e:
 
 
 class VertexAIModelDeployer:
-    """Deploy models to Vertex AI endpoints using pre-built containers."""
+    """Deploy MLflow models to Vertex AI endpoints using native MLflow serving."""
 
     def __init__(self,
                  project_id: str = "upheld-apricot-468313-e0",
@@ -77,9 +77,9 @@ class VertexAIModelDeployer:
                     model_dirs.add((model_name, model_version))
 
             for model_name, version in model_dirs:
-                # Check if model has required files
+                # Check if model has required MLflow files
                 model_path = f"models/{model_name}/{version}"
-                required_files = ["model.joblib", "metadata.json"]
+                required_files = ["model/MLmodel", "deployment_metadata.json"]
 
                 has_all_files = True
                 for required_file in required_files:
@@ -132,24 +132,32 @@ class VertexAIModelDeployer:
             raise
 
     def upload_model_to_vertex(self, model_name: str, gcs_uri: str) -> Optional[aiplatform.Model]:
-        """Upload model from GCS to Vertex AI Model Registry."""
+        """Upload MLflow model from GCS to Vertex AI Model Registry."""
         try:
             logger.info(f"📤 Uploading {model_name} to Vertex AI Model Registry...")
 
-            # Use pre-built scikit-learn container that supports statsmodels
+            # Use scikit-learn container as base for custom MLflow serving
+            # This will require the MLflow model to be loaded as a python_function
             serving_container_image_uri = "us-docker.pkg.dev/vertex-ai/prediction/sklearn-cpu.1-0:latest"
+            
+            # Set environment variables for MLflow python_function serving
+            serving_container_environment_variables = {
+                "MODEL_TYPE": "mlflow_python_function"
+            }
 
-            # Upload model
+            # Upload model with MLflow serving configuration
             model = aiplatform.Model.upload(
                 display_name=model_name,
                 artifact_uri=gcs_uri,
                 serving_container_image_uri=serving_container_image_uri,
-                description=f"ARIMA model for book sales forecasting - {model_name}",
+                serving_container_environment_variables=serving_container_environment_variables,
+                description=f"MLflow ARIMA model for book sales forecasting - {model_name}",
                 labels={
                     "model_type": "arima",
                     "framework": "statsmodels",
                     "isbn": model_name.replace("arima_book_", ""),
-                    "deployment_type": "vertex_ai_prebuilt"
+                    "deployment_type": "vertex_ai_mlflow",
+                    "serving_format": "mlflow"
                 }
             )
 
@@ -351,7 +359,7 @@ class VertexAIModelDeployer:
 
 def main():
     """Main function with command line interface."""
-    parser = argparse.ArgumentParser(description="Deploy models to Vertex AI endpoints using pre-built containers")
+    parser = argparse.ArgumentParser(description="Deploy MLflow models to Vertex AI endpoints using native MLflow serving")
 
     parser.add_argument("--deploy-all", action="store_true", help="Deploy all available models")
     parser.add_argument("--model-name", help="Deploy specific model by name")

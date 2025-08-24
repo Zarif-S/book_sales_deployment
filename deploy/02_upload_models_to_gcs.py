@@ -92,7 +92,7 @@ class ModelUploader:
             return []
 
     def download_model_from_mlflow(self, model_name: str, version: str = "latest") -> Optional[str]:
-        """Download model from MLflow to /outputs/models/mlflow-downloads directory."""
+        """Download complete MLflow model artifacts for Vertex AI MLflow serving."""
         try:
             logger.info(f"📥 Downloading {model_name} v{version} from MLflow...")
 
@@ -100,175 +100,104 @@ class ModelUploader:
             outputs_dir = Path(__file__).parent.parent / "outputs" / "models" / "mlflow-downloads" / model_name
             outputs_dir.mkdir(parents=True, exist_ok=True)
             temp_dir = str(outputs_dir)
-            model_path = os.path.join(temp_dir, "model")
 
-            # Download model
-            model_uri = f"models:/{model_name}/{version}"
-            downloaded_model = mlflow.statsmodels.load_model(model_uri)
-
-            # Save in scikit-learn compatible format for Vertex AI
-            # We'll save as joblib pickle which Vertex AI pre-built containers can load
-            joblib_model_path = os.path.join(temp_dir, "model.joblib")
-            try:
-                joblib.dump(downloaded_model, joblib_model_path)
-                logger.info(f"✅ Model saved as joblib: {joblib_model_path}")
-            except Exception as joblib_error:
-                logger.warning(f"Failed to save as joblib: {joblib_error}")
-
-                # Save as regular pickle backup in outputs/models folder only if joblib fails
-                isbn = model_name.replace("arima_book_", "")
-                outputs_dir = Path(__file__).parent.parent / "outputs" / "models"
-                outputs_dir.mkdir(parents=True, exist_ok=True)
-
-                pickle_model_path = outputs_dir / f"{model_name}_model.pkl"
-                with open(pickle_model_path, 'wb') as f:
-                    pickle.dump(downloaded_model, f)
-                logger.info(f"✅ Model saved as pickle backup: {pickle_model_path}")
-
-                # Also create a copy in temp dir for deployment
-                temp_pickle_path = os.path.join(temp_dir, "model.pkl")
-                with open(temp_pickle_path, 'wb') as f:
-                    pickle.dump(downloaded_model, f)
-
-            # Get model metadata
-            try:
-                client = mlflow.tracking.MlflowClient()
-                # If version is "latest", get the actual latest version number
-                if version == "latest":
-                    registered_model = client.get_registered_model(model_name)
-                    if registered_model.latest_versions:
-                        actual_version = registered_model.latest_versions[0].version
-                    else:
-                        raise ValueError(f"No versions found for model {model_name}")
+            # Get MLflow client and model version info
+            client = mlflow.tracking.MlflowClient()
+            
+            # If version is "latest", get the actual latest version number
+            if version == "latest":
+                registered_model = client.get_registered_model(model_name)
+                if registered_model.latest_versions:
+                    actual_version = registered_model.latest_versions[0].version
                 else:
-                    actual_version = version
+                    raise ValueError(f"No versions found for model {model_name}")
+            else:
+                actual_version = version
+            
+            model_version = client.get_model_version(model_name, actual_version)
+            
+            # Download complete MLflow artifact directory using MLflow's download_artifacts
+            logger.info(f"📦 Downloading complete MLflow artifacts from run {model_version.run_id}")
+            
+            # Download all model artifacts (model.statsmodels, MLmodel, conda.yaml, requirements.txt, etc.)
+            artifacts_path = client.download_artifacts(
+                run_id=model_version.run_id,
+                path="model",  # Download the entire model directory
+                dst_path=temp_dir
+            )
+            
+            logger.info(f"✅ MLflow artifacts downloaded to: {artifacts_path}")
+            
+            # List downloaded files for verification
+            model_dir = os.path.join(temp_dir, "model")
+            if os.path.exists(model_dir):
+                files = os.listdir(model_dir)
+                logger.info(f"📋 MLflow artifacts: {files}")
                 
-                model_version = client.get_model_version(model_name, actual_version)
+                # Verify essential MLflow files are present
+                essential_files = ["MLmodel", "model.statsmodels"]
+                missing_files = [f for f in essential_files if f not in files]
+                if missing_files:
+                    logger.warning(f"⚠️ Missing essential MLflow files: {missing_files}")
+                else:
+                    logger.info("✅ All essential MLflow files present")
 
-                # Save metadata
-                metadata = {
-                    "model_name": model_name,
-                    "version": version,
-                    "stage": model_version.current_stage,
-                    "creation_timestamp": model_version.creation_timestamp,
-                    "last_updated_timestamp": model_version.last_updated_timestamp,
-                    "source": model_version.source,
-                    "run_id": model_version.run_id,
-                    "tags": model_version.tags,
-                    "isbn": model_name.replace("arima_book_", ""),
-                    "model_type": "SARIMA",
-                    "framework": "statsmodels",
-                    "deployment_format": "joblib"
-                }
+            # Create enhanced metadata for MLflow deployment
+            metadata = {
+                "model_name": model_name,
+                "version": actual_version,
+                "stage": model_version.current_stage,
+                "creation_timestamp": model_version.creation_timestamp,
+                "last_updated_timestamp": model_version.last_updated_timestamp,
+                "source": model_version.source,
+                "run_id": model_version.run_id,
+                "tags": model_version.tags,
+                "isbn": model_name.replace("arima_book_", ""),
+                "model_type": "SARIMA",
+                "framework": "statsmodels",
+                "deployment_format": "mlflow",  # Changed from joblib to mlflow
+                "serving_engine": "mlflow",
+                "artifacts_path": "model/"
+            }
 
-                metadata_path = os.path.join(temp_dir, "metadata.json")
-                with open(metadata_path, 'w') as f:
-                    json.dump(metadata, f, indent=2, default=str)
+            metadata_path = os.path.join(temp_dir, "deployment_metadata.json")
+            with open(metadata_path, 'w') as f:
+                json.dump(metadata, f, indent=2, default=str)
+            
+            logger.info(f"✅ Created deployment metadata: {metadata_path}")
 
-            except Exception as meta_error:
-                logger.warning(f"Could not save metadata: {meta_error}")
-
-            # Create a simple prediction script for Vertex AI
-            self._create_prediction_script(temp_dir, model_name)
-
-            logger.info(f"✅ Model downloaded to: {temp_dir}")
+            logger.info(f"✅ Model downloaded in MLflow format to: {temp_dir}")
             return temp_dir
 
         except Exception as e:
             logger.error(f"Failed to download model {model_name}: {e}")
             return None
 
-    def _create_prediction_script(self, model_dir: str, model_name: str):
-        """Create a prediction script for Vertex AI pre-built container."""
-        isbn = model_name.replace("arima_book_", "")
 
-        prediction_script = f'''#!/usr/bin/env python3
-"""
-Prediction script for Vertex AI pre-built container.
-Model: {model_name}
-ISBN: {isbn}
-"""
-
-import joblib
-import pickle
-import json
-import numpy as np
-import pandas as pd
-from typing import List, Dict, Any
-
-# Load the model
-try:
-    model = joblib.load("/opt/ml/model/model.joblib")
-except:
-    with open("/opt/ml/model/model.pkl", "rb") as f:
-        model = pickle.load(f)
-
-def predict(instances: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-    """Make predictions for Vertex AI."""
-    predictions = []
-
-    for instance in instances:
+    def _upload_large_file_resumable(self, local_file_path: str, gcs_file_path: str, file_size: int) -> bool:
+        """Upload large files using resumable upload with progress tracking."""
         try:
-            # Parse input
-            steps = instance.get("steps", 12)
-            confidence_intervals = instance.get("return_confidence_intervals", False)
-            confidence_level = instance.get("confidence_level", 0.95)
-
-            # Make forecast
-            if confidence_intervals:
-                forecast_result = model.get_forecast(steps=steps)
-                forecast_values = forecast_result.predicted_mean.tolist()
-
-                # Get confidence intervals
-                conf_int = forecast_result.conf_int(alpha=1-confidence_level)
-                lower_bounds = conf_int.iloc[:, 0].tolist()
-                upper_bounds = conf_int.iloc[:, 1].tolist()
-
-                prediction = {{
-                    "forecast": forecast_values,
-                    "confidence_intervals": {{
-                        "lower": lower_bounds,
-                        "upper": upper_bounds,
-                        "confidence_level": confidence_level
-                    }},
-                    "steps": steps,
-                    "model_name": "{model_name}",
-                    "isbn": "{isbn}"
-                }}
-            else:
-                forecast = model.forecast(steps=steps)
-                forecast_values = forecast.tolist() if hasattr(forecast, 'tolist') else [float(forecast)]
-
-                prediction = {{
-                    "forecast": forecast_values,
-                    "steps": steps,
-                    "model_name": "{model_name}",
-                    "isbn": "{isbn}"
-                }}
-
-            predictions.append(prediction)
-
+            # Create blob
+            blob = self.bucket.blob(gcs_file_path)
+            blob.chunk_size = 8 * 1024 * 1024  # Set 8MB chunk size on blob
+            
+            logger.info(f"  📦 Starting resumable upload for {os.path.basename(local_file_path)} ({file_size/(1024*1024):.1f}MB)")
+            
+            # Configure resumable upload with large timeout
+            with open(local_file_path, 'rb') as file_obj:
+                # Use blob upload with extended timeout - resumable is automatic for large files
+                blob.upload_from_file(
+                    file_obj,
+                    content_type='application/octet-stream',
+                    timeout=1800  # 30 minute total timeout
+                )
+                
+            logger.info(f"  ✅ Resumable upload completed: {gcs_file_path}")
+            return True
+                
         except Exception as e:
-            predictions.append({{
-                "error": str(e),
-                "model_name": "{model_name}",
-                "isbn": "{isbn}"
-            }})
-
-    return predictions
-
-if __name__ == "__main__":
-    # Test prediction
-    test_instances = [{{"steps": 4}}]
-    result = predict(test_instances)
-    print(json.dumps(result, indent=2, default=str))
-'''
-
-        script_path = os.path.join(model_dir, "predictor.py")
-        with open(script_path, 'w') as f:
-            f.write(prediction_script)
-
-        logger.info(f"Created prediction script: {script_path}")
+            logger.error(f"  ❌ Resumable upload failed for {gcs_file_path}: {e}")
+            return False
 
     def upload_model_to_gcs(self, model_dir: str, model_name: str) -> Optional[str]:
         """Upload model directory to GCS."""
@@ -300,12 +229,19 @@ if __name__ == "__main__":
                             'size': f"{file_size/1024:.1f}KB" if file_size < 1024*1024 else f"{file_size/(1024*1024):.1f}MB"
                         })
 
-                        blob = self.bucket.blob(gcs_file_path)
-                        blob.upload_from_filename(local_file_path)
-                        uploaded_files.append(gcs_file_path)
+                        # Use resumable upload for large files (>100MB) or model files
+                        if file_size > 100 * 1024 * 1024 or local_file_path.endswith('.statsmodels'):
+                            success = self._upload_large_file_resumable(local_file_path, gcs_file_path, file_size)
+                            if success:
+                                uploaded_files.append(gcs_file_path)
+                        else:
+                            # Regular upload for smaller files with extended timeout
+                            blob = self.bucket.blob(gcs_file_path)
+                            blob.upload_from_filename(local_file_path, timeout=300)  # 5 minute timeout
+                            uploaded_files.append(gcs_file_path)
+                            logger.info(f"  ✅ Uploaded: {gcs_file_path}")
 
                         pbar.update(1)
-                        logger.info(f"  ✅ Uploaded: {gcs_file_path}")
                     except Exception as file_error:
                         logger.error(f"  ❌ Failed to upload {gcs_file_path}: {file_error}")
                         pbar.update(1)
