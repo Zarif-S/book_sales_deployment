@@ -88,7 +88,7 @@ poetry run zenml stack describe local_vertex_test
 # GCS artifact store (already configured)
 poetry run zenml artifact-store describe gcs_store
 
-# Container registry (already configured)  
+# Container registry (already configured)
 poetry run zenml container-registry describe gcr_registry
 
 # Local orchestrator (default, no setup needed)
@@ -184,7 +184,7 @@ cd streamlit_app && streamlit run app.py
 
 ### ⚠️ Note: deploy/01_train_pipeline_and_create_endpoints.py
 
-**This script is designed for full Vertex AI orchestration** and requires a remote ZenML server (ZenML 0.84.2+ requirement). 
+**This script is designed for full Vertex AI orchestration** and requires a remote ZenML server (ZenML 0.84.2+ requirement).
 
 **For your current hybrid setup (local orchestrator + cloud storage), use the workflow above instead.**
 
@@ -225,7 +225,7 @@ poetry run python deploy/01_train_pipeline_and_create_endpoints.py --deploy-all
 
 **Current Status**: Complete containerization solution using Vertex AI's pre-built containers:
 - ✅ Creates Vertex AI endpoints
-- ✅ Discovers models from MLflow registry  
+- ✅ Discovers models from MLflow registry
 - ✅ Uploads models to Google Cloud Storage
 - ✅ Deploys models using Vertex AI pre-built scikit-learn containers
 - ✅ Full end-to-end model serving capability
@@ -296,7 +296,7 @@ Your endpoints return structured predictions:
 {
   "forecast": [245.2, 267.8, 234.1, 289.3],
   "steps": 4,
-  "model_name": "arima_book_9780722532935", 
+  "model_name": "arima_book_9780722532935",
   "isbn": "9780722532935",
   "confidence_intervals": {
     "lower": [230.1, 250.3, 220.5, 270.8],
@@ -314,7 +314,7 @@ Your endpoints return structured predictions:
 
 **Key Benefits:**
 - **No Custom Dockerfiles**: Uses Google's optimized containers
-- **Automatic Scaling**: Handles traffic spikes automatically  
+- **Automatic Scaling**: Handles traffic spikes automatically
 - **Cost Effective**: Pay only for usage
 - **Production Ready**: Full monitoring and logging
 - **Framework Support**: Native statsmodels/MLflow compatibility
@@ -419,12 +419,62 @@ gcloud artifacts repositories create zenml-book-sales-artifacts \
     --repository-format=docker \
     --location=europe-west2 \
     --description="ZenML pipeline container images"
+
+# IMPORTANT: Also create repository for Custom Prediction Routines
+gcloud artifacts repositories create book-sales-cpr \
+    --repository-format=docker \
+    --location=europe-west2 \
+    --description="Custom Prediction Routine containers for MLflow ARIMA models"
 ```
 
 **Configure Docker authentication:**
 ```bash
 gcloud auth configure-docker europe-west2-docker.pkg.dev
 ```
+
+## 🐳 Why We Need Artifact Registry for Model Deployment
+
+### The MLflow + Vertex AI Challenge
+
+**The Problem:**
+- MLflow ARIMA models are saved as `.pkl` (pickle) files with statsmodels format
+- Vertex AI pre-built containers expect `.joblib` files for scikit-learn models
+- **Direct deployment fails** because the serving containers can't load MLflow/statsmodels artifacts
+
+**The Solution: Custom Prediction Routines (CPR)**
+
+Custom Prediction Routines allow us to write custom Python code that:
+1. **Loads MLflow models correctly** using `mlflow.statsmodels.load_model()`
+2. **Handles prediction requests** with custom preprocessing/postprocessing
+3. **Packages everything** in a Docker container that Vertex AI can serve
+
+**Why Artifact Registry is Required:**
+
+```
+MLflow ARIMA Model     Custom Predictor      Docker Container     Artifact Registry     Vertex AI Endpoint
+(.pkl files)      →    (predictor.py)   →    (+ Dependencies) →   (Storage)        →    (Serving)
+                                        
+Pre-built Container    ❌ Can't load .pkl  →  Fails to serve MLflow models
+```
+
+**Technical Implementation:**
+1. **predictor.py**: Custom Python code that knows how to load MLflow ARIMA models
+2. **requirements.txt**: MLflow, statsmodels, and other dependencies
+3. **LocalModel.build_cpr_model()**: Builds a Docker container with our custom code
+4. **Artifact Registry**: Stores the container so Vertex AI can access it
+5. **Vertex AI Endpoint**: Pulls the container and serves predictions
+
+**Cost & Maintenance Trade-offs:**
+- ✅ **Enables MLflow model serving** (impossible with pre-built containers alone)
+- ✅ **Production-grade deployment** with proper containerization
+- ⚠️ **Container storage costs** (~$0.10/GB/month in Artifact Registry)
+- ⚠️ **Rebuild required** when dependencies change
+- ✅ **Portfolio value** - demonstrates advanced MLOps container orchestration skills
+
+**Alternative Approaches (and why they don't work well):**
+- **Convert to .joblib**: ❌ Loses MLflow metadata and model lineage
+- **Cloud Run**: ✅ Simpler but ❌ not ML platform focused
+- **Custom serving**: ✅ Possible but ❌ much more complex infrastructure
 
 ### 4. GCS Bucket & Data Setup
 
@@ -995,6 +1045,7 @@ open https://console.cloud.google.com/vertex-ai/locations/europe-west2/endpoints
 - Package MLflow models in serving containers
 - Configure custom prediction containers
 - Set up model serving infrastructure
+- Include model monitoring
 
 **Production Enhancements (Post-Refactor):**
 - Custom prediction containers for MLflow models
